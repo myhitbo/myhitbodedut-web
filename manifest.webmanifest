@@ -1,6 +1,11 @@
 {
   "name": "MyHitbodedut",
   "short_name": "MyHitbodedut",
+  "id": "./",
+  "description": "Daily hitbodedut: timed session, journal, texts, zmanim.",
+  "lang": "en",
+  "dir": "auto",
+  "categories": ["lifestyle"],
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

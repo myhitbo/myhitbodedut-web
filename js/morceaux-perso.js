@@ -53,3 +53,9 @@ export async function ajoute({ id, titre, source, blob }) {
 export async function retire(id) {
   await transaction('readwrite', (m) => m.delete(id));
 }
+
+/** Efface tous les morceaux gardés (réinitialisation, FWEBCODE-07) ; attend la fin de la transaction. */
+export async function vide() {
+  if (typeof indexedDB === 'undefined') return;
+  await transaction('readwrite', (m) => m.clear());
+}

@@ -4,6 +4,7 @@
 // Android : deux se'ifim par jour ; Roch 'Hodech ; avant et pendant chaque fête
 // les siennes ; les vendredis ordinaires le Chabbat ; sinon la vie de chaque jour.
 import { calendrier } from './calendrier-juif.js';
+import { JewishCalendar } from '../vendor/kosher-zmanim-0.9.0.min.js';
 
 export const PAR_JOUR = 2;
 // Les mois de KosherJava et de kosher-zmanim.
@@ -13,7 +14,8 @@ export function fenetre(mois, jour, embolismique) {
   const adar = embolismique ? ADAR_II : ADAR;
   if (mois === adar && jour <= 15) return 'pourim';
   if (mois === adar || (mois === NISSAN && jour <= 22)) return 'pessah';
-  if (mois === NISSAN || mois === IYAR || (mois === SIVAN && jour <= 7)) return 'omer';
+  if (mois === NISSAN || mois === IYAR) return 'omer';
+  if (mois === SIVAN && jour <= 7) return 'chavouot';
   if ((mois === TAMMUZ && jour >= 17) || (mois === AV && jour <= 9)) return 'bein_hametsarim';
   if (mois === ELUL || (mois === TISHREI && jour <= 2)) return 'eloul';
   if (mois === TISHREI && jour <= 10) return 'kippour';
@@ -25,7 +27,13 @@ export function fenetre(mois, jour, embolismique) {
 
 const decale = (iso, n) => { const [a, m, d] = iso.split('-').map(Number); return new Date(Date.UTC(a, m - 1, d + n, 12)).toISOString().slice(0, 10); };
 const epoque = (iso) => Math.floor(Date.parse(`${iso}T00:00:00Z`) / 86400000);
-const fenetreDu = (iso, il) => { const c = calendrier(iso, il, false, false); return fenetre(c.getJewishMonth(), c.getJewishDayOfMonth(), c.isJewishLeapYear()); };
+// Le jeûne repoussé au dimanche 10 Av : un jour de 9 Av, pas un jour ordinaire (audit du 16/11 :
+// Kitsour Yalkut Yosef 554:13 et 551:10 ; YalkutYosef.fenetreDu).
+const fenetreDu = (iso, il) => {
+  const c = calendrier(iso, il, false, false);
+  if (c.getYomTovIndex() === JewishCalendar.TISHA_BEAV) return 'bein_hametsarim';
+  return fenetre(c.getJewishMonth(), c.getJewishDayOfMonth(), c.isJewishLeapYear());
+};
 
 /** [période, rang du jour dans la période] */
 export function periode(iso, il) {
@@ -42,15 +50,37 @@ export function periode(iso, il) {
   return new Date(`${iso}T12:00:00Z`).getUTCDay() === 5 ? ['chabbat', Math.floor(e / 7)] : ['ordinaire', e];
 }
 
-export function du(seifs, rang) {
+/**
+ * YalkutYosef.longueur : la durée, en jours, de la fenêtre de fête où tombe le jour (Roch 'Hodech compris),
+ * ou 0 hors fenêtre et le jour du Roch 'Hodech, qui a son propre rang.
+ */
+export function longueur(iso, il) {
+  if (calendrier(iso, il, false, false).isRoshChodesh()) return 0;
+  const f = fenetreDu(iso, il);
+  if (!f) return 0;
+  let avant = 0;
+  while (avant < 60 && fenetreDu(decale(iso, -(avant + 1)), il) === f) avant++;
+  let apres = 0;
+  while (apres < 60 && fenetreDu(decale(iso, apres + 1), il) === f) apres++;
+  return avant + 1 + apres;
+}
+
+/**
+ * Les se'ifim d'un rang (YalkutYosef.du). Dans une fenêtre de [longueur] jours, le rang est réparti sur
+ * toute la liste : les lois de la veille au début, celles de la fête à la fin.
+ */
+export function du(seifs, rang, longueur = 0) {
   if (!seifs?.length) return [];
-  const debut = (((rang * PAR_JOUR) % seifs.length) + seifs.length) % seifs.length;
+  const n = seifs.length;
+  const debut = longueur > 0
+    ? ((Math.floor(n >= longueur ? (rang * n) / longueur : rang) % n) + n) % n
+    : (((rang * PAR_JOUR) % n) + n) % n;
   return Array.from({ length: Math.min(PAR_JOUR, seifs.length) }, (_, i) => seifs[(debut + i) % seifs.length]);
 }
 
 export function pour(livre, iso, il) {
   const [p, rang] = periode(iso, il);
-  return du(livre.periodes[p] ?? [], rang);
+  return du(livre.periodes[p] ?? [], rang, longueur(iso, il));
 }
 
 export function recherche(livre, texte) {

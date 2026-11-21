@@ -3,7 +3,8 @@
 // Sefaria). La section de la paracha du Chabbat qui vient, partagée en sept
 // du dimanche au Chabbat ; première année du livre les années hébraïques
 // impaires, deuxième les paires, l'autre quand la section manque ; 'Hanouka
-// partagée en huit. Mêmes choix que l'application Android.
+// partagée en huit ; du 15 au 23 Tichri, Vézot haBéra'kha partagée en neuf.
+// Mêmes choix que l'application Android.
 import { calendrier } from './calendrier-juif.js';
 
 // L'énumération Parsha de KosherJava et de kosher-zmanim, dans l'ordre.
@@ -43,10 +44,13 @@ export function part(items, jour, parts) {
   return items.slice(Math.floor(jour * items.length / parts), Math.floor((jour + 1) * items.length / parts));
 }
 
+/** Début de la note de l'auteur qui remplace une section sans halakhot. */
+export const SANS_HALAKHOT = 'בפרשה זו לא כתבתי';
+
 export const anneeDuLivre = (anneeHebraique) => (anneeHebraique % 2 === 1 ? 1 : 2);
 
 /** [{ texte, numero, section, annee }] */
-export function choix(livre, parsha, jourSemaine, anneeHebraique, jourHanouka = 0) {
+export function choix(livre, parsha, jourSemaine, anneeHebraique, jourHanouka = 0, parts = 7) {
   if (jourHanouka >= 1 && jourHanouka <= 8 && livre.hanouka) {
     const h = livre.hanouka;
     return part(h.h.map((_, i) => i), jourHanouka - 1, 8).map((i) => ({ texte: h.h[i], numero: i + 1, section: h.he, annee: 1 }));
@@ -56,7 +60,9 @@ export function choix(livre, parsha, jourSemaine, anneeHebraique, jourHanouka = 
     const secs = sections(livre.annees[String(a)] ?? {}, parsha);
     if (!secs) continue;
     const toutes = secs.flatMap(({ s, depart, h }) => h.map((t, i) => ({ texte: t, numero: depart + i + 1, section: s.he, annee: a })));
-    if (toutes.length) return part(toutes, jourSemaine, 7);
+    // Ni la note « je n'ai pas écrit de halakhot ici » (Vayéchev, année 2) : l'autre année.
+    const utiles = toutes.filter((x) => !x.texte.startsWith(SANS_HALAKHOT));
+    if (utiles.length) return part(utiles, jourSemaine, parts);
   }
   return [];
 }
@@ -66,6 +72,10 @@ export function pour(livre, iso, enIsrael) {
   const semaine = jc.getDayOfWeek() - 1; // 1 dimanche … 7 Chabbat
   // getUpcomingParshah de KosherJava (celui de kosher-zmanim 0.9.0 plante : son clone n'a pas getParsha).
   const [a, m, d] = iso.split('-').map(Number);
+  // Du 15 au 23 Tichri : la section de Vézot haBéra'kha (Hochaana Rabba), non la paracha qui vient ; sur neuf jours.
+  if (jc.getJewishMonth() === 7 && jc.getJewishDayOfMonth() >= 15 && jc.getJewishDayOfMonth() <= 23) {
+    return choix(livre, 'VZOS_HABERACHA', jc.getJewishDayOfMonth() - 15, jc.getJewishYear(), 0, 9);
+  }
   let p = jc.getParsha();
   for (let n = 6 - semaine || 7; !p; n += 7) {
     p = calendrier(new Date(Date.UTC(a, m - 1, d + n, 12)).toISOString().slice(0, 10), enIsrael, false, false).getParsha();

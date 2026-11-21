@@ -1,6 +1,7 @@
 // Les trophées (Trophees.kt, 11/10, à niveaux depuis le 12/10) : onze
-// familles qui montent par niveaux, la médaille passant du bronze à
-// l'argent, à l'or puis au platine. Mêmes règles que l'application Android.
+// familles qui montent par niveaux. Le métal est celui du grade (15/10) :
+// bronze, argent, or, platine, d'après le nombre de trophées gagnés en tout.
+// Mêmes règles que l'application Android.
 
 // L'icône : clé de ICONES (trophees-formes.js), au trait, variante B choisie le 16/10.
 // L'objet (12/10) : coupe, écusson, étoile, rosette, médaille, pièces, cristal, gemme (tools/trophees_formes.py).
@@ -21,12 +22,6 @@ export const FAMILLES = [
 
 export const METAUX = ['bronze', 'argent', 'or', 'platine'];
 
-/** Le métal d'un rang : un quart de la famille par métal ; une famille d'un seul niveau est de bronze. */
-export function metal(f, rang) {
-  if (f.seuils.length === 1) return 'bronze';
-  return METAUX[Math.min(3, Math.max(0, Math.floor(((rang - 1) * 4) / f.seuils.length)))];
-}
-
 const jourDe = (iso) => Math.round(Date.parse(`${iso}T12:00:00Z`) / 86400000);
 const semaineDe = (iso) => new Date(`${iso}T12:00:00Z`).getUTCDay(); // 0 dimanche … 6 samedi
 
@@ -42,16 +37,27 @@ export function retours(jours) {
   return n.filter((v, i) => i > 0 && v - n[i - 1] > 7).length;
 }
 
-/** La plus longue suite de jours consécutifs (Trophees.plusLongueSuite). */
-export function plusLongueSuite(jours) {
-  const n = [...new Set([...jours].map(jourDe))].sort((a, b) => a - b);
+/** Tous les jours entre a et b (exclus) sont-ils exemptés ? Alors la suite continue (Trophees.suiteContinue). */
+function suiteContinue(a, b, exempt) {
+  for (let t = Date.parse(`${a}T12:00:00Z`) + 86400000; t < Date.parse(`${b}T12:00:00Z`); t += 86400000) {
+    if (!exempt(new Date(t).toISOString().slice(0, 10))) return false;
+  }
+  return true;
+}
+
+/**
+ * La plus longue suite de jours de pratique (Trophees.plusLongueSuite) ; un jour exempté ne compte
+ * pas et ne casse pas la suite (FDONNEES-09).
+ */
+export function plusLongueSuite(jours, exempt = () => false) {
+  const tries = [...new Set(jours)].sort();
   let meilleure = 0; let courante = 0;
-  n.forEach((v, i) => { courante = i > 0 && v - n[i - 1] === 1 ? courante + 1 : 1; meilleure = Math.max(meilleure, courante); });
+  tries.forEach((iso, i) => { courante = i > 0 && suiteContinue(tries[i - 1], iso, exempt) ? courante + 1 : 1; meilleure = Math.max(meilleure, courante); });
   return meilleure;
 }
 
 /** La valeur que compte une famille. pratique = { minutes: { iso: min }, notes, meilleureSerie, tikkun: [iso] }. */
-export function valeur({ minutes, notes, meilleureSerie, tikkun = [] }, cle) {
+export function valeur({ minutes, notes, meilleureSerie, tikkun = [], exempt = () => false }, cle) {
   // Un jour validé compte, même à 0 min (Trophees.valeur) : comme la série.
   const jours = Object.keys(minutes);
   const valeurs = Object.values(minutes);
@@ -66,7 +72,7 @@ export function valeur({ minutes, notes, meilleureSerie, tikkun = [] }, cle) {
     case 'retour': return retours(jours);
     case 'plume': return notes;
     case 'tikkun': return new Set(tikkun).size;
-    case 'tikkun_serie': return plusLongueSuite(tikkun);
+    case 'tikkun_serie': return plusLongueSuite(tikkun, exempt);
     default: return 0;
   }
 }
@@ -89,8 +95,9 @@ export function progres(p, f) {
 }
 
 /**
- * Les niveaux gagnés depuis la dernière fois, le plus haut de chaque famille ;
- * rien la première fois (vus null) ni depuis l'ancien format (clés sans « : »).
+ * Les niveaux gagnés depuis la dernière fois, le plus haut de chaque famille, le plus coûteux
+ * d'abord (Trophees.nouveaux, 13/11) ; rien la première fois (vus null) ni depuis l'ancien
+ * format (clés sans « : »).
  */
 export function nouveaux(g, vus) {
   if (!vus || (vus.size && ![...vus].some((k) => k.includes(':')))) return [];
@@ -100,8 +107,18 @@ export function nouveaux(g, vus) {
     const [cle, r] = k.split(':');
     if (!parFamille.has(cle) || parFamille.get(cle) < Number(r)) parFamille.set(cle, Number(r));
   }
-  return [...parFamille].map(([cle, r]) => { const famille = FAMILLES.find((f) => f.cle === cle); return { famille, rang: r, metal: metal(famille, r) }; })
-    .sort((a, b) => METAUX.indexOf(b.metal) * 100 + b.rang - (METAUX.indexOf(a.metal) * 100 + a.rang));
+  return [...parFamille].map(([cle, r]) => ({ famille: FAMILLES.find((f) => f.cle === cle), rang: r }))
+    .sort((a, b) => cout(b.famille, b.famille.seuils[b.rang - 1]) - cout(a.famille, a.famille.seuils[a.rang - 1]));
+}
+
+/**
+ * Une fête remise à plus tard (FWEBCODE-13) : les niveaux gagnés depuis vusAvant sont retirés de vus,
+ * pour que le prochain accueil les trouve encore neufs ; ce qui était déjà vu le reste.
+ */
+export function remisANeuf(vus, gagnes, vusAvant) {
+  const r = new Set(vus);
+  for (const k of gagnes) if (!vusAvant.has(k)) r.delete(k);
+  return r;
 }
 
 /** Le chemin (15/10, Trophees.chemin) : tous les niveaux en une liste, du plus facile au plus dur. */
@@ -159,7 +176,7 @@ export function datesGain(minutes, notes, exempt, tikkun = []) {
     if (notesSet.has(d)) notesVues++;
     if (tikkunSet.has(d)) {
       tikkunN++;
-      tikkunSuite = tikkunAvant && jourDe(d) - jourDe(tikkunAvant) === 1 ? tikkunSuite + 1 : 1;
+      tikkunSuite = tikkunAvant && suiteContinue(tikkunAvant, d, exempt) ? tikkunSuite + 1 : 1;
       tikkunMeilleure = Math.max(tikkunMeilleure, tikkunSuite);
       tikkunAvant = d;
     }

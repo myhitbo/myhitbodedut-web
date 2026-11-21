@@ -7,7 +7,8 @@
 
 // --- RegleLangue (Langue.kt) ------------------------------------------------
 // En hébreu, rien que de l'hébreu ; en anglais, l'hébreu et l'anglais ; en
-// français, l'hébreu et le français. Jamais de repli d'une langue sur une
+// français, l'hébreu et le français ; en espagnol et en arabe tunisien (17/11),
+// dont les textes ne sont pas traduits, l'hébreu seul. Jamais de repli d'une langue sur une
 // autre : un texte dont la langue n'est pas permise n'est pas montré.
 export const RegleLangue = {
   /** « iw » est l'ancien code d'Android pour l'hébreu. */
@@ -67,13 +68,17 @@ const CENTAINES = ' קרש';
  */
 export const LanguesTexte = {
   MODES: ['he', 'fr', 'en', 'he+fr', 'he+en', 'fr+en'],
-  defaut: (langue) => (langue === 'he' || langue === 'iw' ? 'he' : langue === 'en' ? 'he+en' : 'he+fr'),
+  // L'espagnol et l'arabe tunisien (17/11), comme toute langue sans traduction des textes :
+  // l'hébreu seul, jamais le français ni l'anglais à leur place (RegleLangue, LanguesTexte.defaut).
+  defaut: (langue) => (langue === 'en' ? 'he+en' : langue === 'fr' ? 'he+fr' : 'he'),
   mode(choix, langue) { return this.MODES.includes(choix) ? choix : this.defaut(langue); },
   textes(mode, he, fr, en) {
     const tous = mode.split('+').map((l) => (l === 'he' ? ['he', he] : l === 'fr' ? (fr ? ['fr', fr] : null) : (en ? ['en', en] : null))).filter(Boolean);
     return tous.length ? tous : [['he', he]];
   },
   manque: (mode, aTraduction) => !aTraduction && mode.split('+').some((l) => l !== 'he'),
+  /** L'hébreu d'un bloc et ses traductions : une consigne (c) a les siennes à part, c_fr et c_en (TEFILA-02). */
+  bloc: (b) => (b.c !== undefined ? { he: b.c, fr: b.c_fr, en: b.c_en } : { he: b.t, fr: b.fr, en: b.en }),
 };
 
 export const Reference = {
@@ -292,9 +297,10 @@ export const DureeSeance = {
 // Le texte que l'heure suggère en tête du siddour, et le hassid qui l'accompagne.
 export const SiddurMoment = {
   /** Le texte de l'heure locale (heures, minutes). */
-  suggestion(heures, minutes = 0) {
+  suggestion(heures, minutes = 0, sansTikoun = false) {
     const m = heures * 60 + minutes;
-    if (m < 5 * 60) return 'tikoun_hatsot';
+    // sansTikoun : une nuit de Chabbat, de Yom tov ou de 'Hol hamoed Pessa'h (sansTikounHatsot, audit du 16/11).
+    if (m < 5 * 60) return sansTikoun ? 'chema_coucher' : 'tikoun_hatsot';
     if (m < 6 * 60 + 30) return 'birkot_hachahar';
     if (m < 12 * 60 + 30) return 'chaharit';
     if (m < 18 * 60 + 30) return 'minha';
@@ -334,15 +340,10 @@ export const SignetsSiddur = {
 // --- LibraryRules (LibraryRules.kt) ---------------------------------------------
 // Une « source » est du domaine public : ses paragraphes s'affichent. La
 // vocalisation d'une édition dont la licence n'est pas déclarée est un
-// travail éditorial qu'on ne reprend pas : le texte sans nikkoud, alors.
+// travail éditorial qu'on ne reprend pas : le fichier livre déjà ces
+// paragraphes sans nikkoud (LicencesEditionsTest).
 export const LibraryRules = {
-  paragraphes(bibliotheque, source) {
-    const nikkoudOk = bibliotheque?._meta?.editions?.[source.edition]?.nikkoud_ok === true;
-    const avec = source.paragraphes ?? [];
-    if (nikkoudOk) return avec;
-    const sans = source.paragraphes_sans_nikkoud ?? [];
-    return sans.length > 0 ? sans : avec;
-  },
+  paragraphes: (bibliotheque, source) => source.paragraphes ?? [],
   /** Les sources de la bibliothèque, par section et sous-section ; les articles restent sur Android. */
   sources(bibliotheque) {
     return (bibliotheque?.sections ?? []).map((section) => ({
@@ -372,7 +373,16 @@ export const SourceDuJour = {
   PAS: 37,
   candidats(bibliotheque) {
     return LibraryRules.sources(bibliotheque).flatMap((section) => section.sous_sections.flatMap((sous) => sous.entrees.flatMap((e) =>
-      LibraryRules.paragraphes(bibliotheque, e).filter((p) => p.length >= SourceDuJour.MIN).map((texte) => ({ source: e, texte })))));
+      // Le rang d'abord, le filtre ensuite : un paragraphe court écarté ne décale pas les traductions.
+      LibraryRules.paragraphes(bibliotheque, e).map((texte, indice) => ({ source: e, texte, indice })).filter((p) => p.texte.length >= SourceDuJour.MIN))));
+  },
+  /**
+   * Ce que la carte donne à lire, dans l'ordre des langues choisies : [langue, extrait] (13/11,
+   * audit du 12/11, COUV-08, FWEBCODE-08 : la carte ne montrait que l'hébreu).
+   */
+  textes(p, mode) {
+    return LanguesTexte.textes(mode, p.texte, p.source.paragraphes_fr?.[p.indice], p.source.paragraphes_en?.[p.indice])
+      .map(([langue, texte]) => [langue, SourceDuJour.extrait(SourceDuJour.sansBalises(texte))]);
   },
   /** iso : « AAAA-MM-JJ ». */
   choix(bibliotheque, iso) {
@@ -381,6 +391,8 @@ export const SourceDuJour = {
     const jour = Math.round(Date.UTC(+iso.slice(0, 4), +iso.slice(5, 7) - 1, +iso.slice(8, 10)) / 86400000);
     return c[(((jour * SourceDuJour.PAS) % c.length) + c.length) % c.length];
   },
+  /** Les balises (<b>, <small>, <br>) ôtées avant la coupe : la carte est du texte nu (TLIVRES-01). */
+  sansBalises(texte) { return texte.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim(); },
   extrait(texte, max = 320) {
     if (texte.length <= max) return texte;
     const coupe = texte.slice(0, max);
@@ -410,6 +422,44 @@ export const Parcours = {
  * après (1 à 5, 0 = non notée), une gratitude et une chose à travailler, gardées à part des
  * journées sous « journal_plus », date → { avant, apres, gratitude, travail }, comme Android.
  */
+/**
+ * L'historique d'un réglage qui pèse sur le passé (HistoriqueReglage.kt, audit du 12/11,
+ * FDONNEES-05) : « 2000-01-01=0,2026-11-05=1 », la date d'effet puis 1 ou 0. Un jour se juge avec
+ * la valeur en vigueur ce jour-là ; vide : la valeur du moment vaut pour tous les jours.
+ */
+export const HistoriqueReglage = {
+  ORIGINE: '2000-01-01',
+  MAX: 200,
+  decoder(brut) {
+    if (typeof brut !== 'string' || brut.trim() === '') return [];
+    const parDate = new Map();
+    for (const morceau of brut.split(',')) {
+      const i = morceau.indexOf('=');
+      const date = (i < 0 ? morceau : morceau.slice(0, i)).trim();
+      const v = i < 0 ? '' : morceau.slice(i + 1).trim();
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || Number.isNaN(Date.parse(`${date}T00:00:00Z`))) continue;
+      if (v === '1') parDate.set(date, true); else if (v === '0') parDate.set(date, false);
+    }
+    return [...parDate].sort(([a], [b]) => (a < b ? -1 : 1)).map(([depuis, valeur]) => ({ depuis, valeur }));
+  },
+  encoder(histoire) { return histoire.map((e) => `${e.depuis}=${e.valeur ? 1 : 0}`).join(','); },
+  valeurLe(histoire, jour, actuelle) {
+    if (histoire.length === 0 || jour >= histoire.at(-1).depuis) return actuelle;
+    const e = [...histoire].reverse().find((x) => x.depuis <= jour) ?? histoire[0];
+    return e.valeur;
+  },
+  apresChangement(histoire, aujourdhui, ancienne, nouvelle) {
+    if (ancienne === nouvelle) return histoire;
+    const base = histoire.length ? histoire : [{ depuis: this.ORIGINE, valeur: ancienne }];
+    let avant = base.filter((e) => e.depuis < aujourdhui);
+    if (avant.length === 0) avant = [{ depuis: this.ORIGINE, valeur: ancienne }];
+    const suite = avant.at(-1).valeur === nouvelle ? avant : [...avant, { depuis: aujourdhui, valeur: nouvelle }];
+    if (suite.length <= this.MAX) return suite;
+    const gardees = suite.slice(-this.MAX);
+    return [{ depuis: this.ORIGINE, valeur: gardees[0].valeur }, ...gardees.slice(1)];
+  },
+};
+
 export const JournalPlus = {
   /** Les cinq humeurs, de la plus lourde à la plus légère. */
   HUMEURS: ['😞', '🙁', '😐', '🙂', '😄'],

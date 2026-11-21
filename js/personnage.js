@@ -6,6 +6,10 @@
 // Sans tefillin, matsa ni costume de Pourim, ces poses prennent la plus proche :
 // la prière, la lecture (la Haggada), le livre contre soi (la Meguila) ;
 // l'ouverture, debout, la prière de dos bras levés.
+//
+// Les cinq scènes à décor (le lit, le paysage, l'aéroport, 'Hanouka, Soukkot) montrent le
+// hassid barbu et n'ont pas encore leur planche féminine : elles se replient sur la pose la
+// plus proche (13/11, FACCUEIL-03).
 
 export const FEMININ = {
   char_welcome: 'char_f_welcome',
@@ -29,10 +33,18 @@ export const FEMININ = {
   char_offering: 'char_f_offering',
   char_torah: 'char_f_kneel_reading',
   char_standing_back: 'char_f_standing_back',
+  scene_sleeping: 'char_f_praying',
+  scene_nature: 'char_f_standing_back',
+  scene_airport: 'char_f_walking',
+  scene_hanukkah: 'char_f_praise',
+  scene_sukkot: 'char_f_joy',
 };
 
-/** « img/char_guitar.webp » devient « img/char_f_guitar.webp » pour l'adresse 'f' ; tout le reste passe tel quel. */
+/**
+ * « img/char_guitar.webp » devient « img/char_f_guitar.webp » pour l'adresse 'f', et une scène
+ * du hassid, la pose de repli ; tout le reste passe tel quel.
+ */
 export function chemin(src, adresse) {
   if (adresse !== 'f' || typeof src !== 'string') return src;
-  return src.replace(/\bchar_[a-z_]+(?=\.webp\b)/g, (nom) => FEMININ[nom] ?? nom);
+  return src.replace(/\b(?:char|scene)_[a-z_]+(?=\.webp\b)/g, (nom) => FEMININ[nom] ?? nom);
 }

@@ -1,19 +1,20 @@
 // L'application : l'accueil (MainActivity), la séance (SessionActivity),
-// le bravo (CelebrationActivity), la musique (MusicActivity) et un premier
-// écran de réglages. Les écrans suivants arrivent par étapes ; ce qui
-// n'existe pas encore est montré, mais inerte (classe « a-venir »).
+// le bravo (CelebrationActivity), la musique (MusicActivity), les réglages, la
+// bibliothèque, les prières, les zmanim et le calendrier : les écrans que
+// ecranCourant() sait ouvrir.
 
-import { chargeTraduction, formate, langueInitiale, LANGUES } from './i18n.js';
+import { chargeTraduction, langueInitiale, LANGUES } from './i18n.js';
 import { Anneaux, CycleTehilim, LanguesTexte, DureeSeance, JaugeSemaine, LibraryRules, Plaque, Reference, Salutation, SiddurMoment, SignetsSiddur, SourceDuJour, Parcours } from './regles.js';
 import { ART_DU_MOMENT, ChizukBag, ChizukRules } from './chizuk.js';
 import { AMBIANCES, arreter as arreteAmbiance, jouer as joueAmbiance } from './ambiance.js';
 import { MelangeMusique, estQuota, nomDonne, renomme, titreDeFichier } from './musique.js';
 import * as MorceauxPerso from './morceaux-perso.js';
-import { DanseMesure } from './seance.js';
+import { DanseMesure, SessionRule } from './seance.js';
 import { creeStore, memoire, repriseValable } from './store.js';
+import { avisAccueil } from './avis.js';
 import { ajouteJours, heureDans, isoDans, isoLocal } from './calendrier.js';
-import { JERUSALEM_GEONAMES, RAPPELS_TEFILA, dansIsrael, USAGES_LEVANA, aJerusalem, calendrier, jour as jourJuif, jourDeLaPriere, levana, rappelsTefila, usageLevana } from './calendrier-juif.js';
-import { conditionsPour, index as indexAjouts, libelleJour, vrai as ajoutVrai } from './siddur-jour.js';
+import { JERUSALEM_GEONAMES, RAPPELS_TEFILA, USAGES_LEVANA, aJerusalem, calendrier, cleGuechemFin, dansIsrael, jour as jourJuif, jourDeLaPriere, levana, nuit as nuitDuLieu, periodeSansMusique, rappelsTefila, reperes as reperesDuJour, usageLevana } from './calendrier-juif.js';
+import { avecSansTahanoun, conditionsPour, index as indexAjouts, libelleJour, plan as planSection, segments as segmentsAjout, vrai as ajoutVrai } from './siddur-jour.js';
 import { Dedicace, JournalPlus } from './regles.js';
 import { aerer } from './aeration.js';
 import { distanceKm } from './direction.js';
@@ -22,8 +23,9 @@ import * as Trophees from './trophees.js';
 import { FORMES, ICONES } from './trophees-formes.js';
 import { pour as halakhotPour, recherche as rechercheHalakha, source as sourceHalakha } from './halakha.js';
 import { pour as yalkutPour, recherche as rechercheYalkut, source as sourceYalkut, texteCarte, titreCarte } from './yalkut.js';
-import { ajouts as ajoutsDuJour, dateHilloula, debutMoisHebreu, hilloulotPour, clesHilloulotPour, prochainJourHilloula, lienArticle, rechercheHilloula, horaires, illustration as illustrationDuJour, lienHalakha, lienHyomi, momentDuSiddour, moisHebreuVoisin, semaines, semainesHebreu } from './jour-affiche.js';
+import { ajouts as ajoutsDuJour, dateHilloula, debutMoisHebreu, hilloulotPour, clesHilloulotPour, prochainJourHilloula, lienArticle, rechercheHilloula, horaires, illustration as illustrationDuJour, lienHalakha, lienHyomi, momentDuSiddour, momentOuvrable, OFFICES, moisHebreuVoisin, ligneDateDiscutee, noteYomTovCheni, propositionAllumage, coutumeJerusalem, sansTikounHatsot, semaines, semainesHebreu } from './jour-affiche.js';
 import { ALLUMAGES, heure as heureZman, jour as zmanimDuJour } from './zmanim.js';
+import * as Ciel from './ciel.js';
 import * as Vol from './vol.js';
 import * as Boussole from './boussole.js';
 import * as Tikkun from './tikkun.js';
@@ -32,8 +34,14 @@ import * as Coffre from './coffre.js';
 import { chemin as cheminPersonnage } from './personnage.js';
 // La hitbodedout guidée (02/11, Hitbodedut.kt, GuideSujets.kt).
 import { Hitbodedut, MOUVEMENTS, invitationSujet } from './hitbodedut.js';
+import { pas as pasDefilement, vitesse as vitesseDefilement, NIVEAU_MAX, NIVEAU_MIN } from './defilement.js';
 
 // --- Stockage ---------------------------------------------------------------
+// Ce que le navigateur fait de ce qu'on lui confie ne reste plus muet (13/11, audit du 12/11,
+// FWEBCODE-01) : le repli en mémoire a son bandeau, une écriture refusée son message, et la
+// réponse de persist() se lit dans « Mes données ».
+/** Vrai quand le navigateur refuse son stockage : tout reste en mémoire, perdu à la fermeture de la page. */
+let sansStockage = false;
 function stockageDuNavigateur() {
   try {
     const s = window.localStorage;
@@ -41,14 +49,23 @@ function stockageDuNavigateur() {
     s.removeItem('__essai');
     return s;
   } catch {
+    sansStockage = true;
     return memoire();
   }
 }
-const store = creeStore(stockageDuNavigateur());
+/** Une écriture refusée (quota) : dite à l'écran, au plus une fois toutes les dix secondes. */
+let dernierEchecEcriture = 0;
+const store = creeStore(stockageDuNavigateur(), { surEchec: () => {
+  if (!tr || Date.now() - dernierEchecEcriture < 10_000) return;
+  dernierEchecEcriture = Date.now();
+  signale(tr.t('stockage_echec_web'));
+} });
 
 // Safari peut effacer ce qu'un site garde ; une application de l'écran
 // d'accueil en est exemptée, et persist() le demande explicitement.
-navigator.storage?.persist?.().catch(() => {});
+/** La réponse du navigateur : true, il garde ; false, il peut effacer de lui-même ; null, pas encore dite. */
+let stockageDurable = null;
+navigator.storage?.persist?.().then((garde) => { stockageDurable = garde === true; if (!stockageDurable && app.dataset.ecran?.startsWith('reglages/')) rendre(); }).catch(() => {});
 
 // --- Petits outils de construction du DOM ---------------------------------------
 function h(tag, attrs = {}, ...enfants) {
@@ -131,7 +148,7 @@ function appliqueApparence() {
   racine.dataset.mode = store.modeApparence();
   racine.dataset.fond = store.fond();
   racine.dataset.accent = store.accent();
-  racine.lang = tr.langue;
+  racine.lang = tr.locale;
   racine.dir = tr.rtl ? 'rtl' : 'ltr';
   // L'icône suit צדיק / צדקת et la couleur des boutons, comme sur Android (IconeLanceur) ;
   // iOS la lit au moment de « Sur l'écran d'accueil » (web/tools/icones.mjs).
@@ -218,7 +235,15 @@ function choisirSujet() {
 const lecteur = new Audio();
 lecteur.preload = 'none';
 let enEcoute = null;
-lecteur.addEventListener('ended', () => { enEcoute = null; rendre(); });
+lecteur.addEventListener('ended', () => {
+  const apercu = enEcoute !== null;
+  enEcoute = null;
+  // L'aperçu d'un morceau avait pris la place de la musique de la séance : elle repart (FWEBCODE-14).
+  // Après les autres écouteurs de « ended » : celui de la lecture aléatoire, plus bas, verrait sinon
+  // lectureAuHasard que demarreMusique() vient de poser, et tirerait aussitôt un second morceau.
+  if (apercu && store.isSessionRunning()) setTimeout(() => { if (store.isSessionRunning() && enEcoute === null) demarreMusique(); }, 0);
+  rendre();
+});
 lecteur.addEventListener('pause', () => { if (!lecteur.ended) { enEcoute = null; rendre(); } });
 
 /**
@@ -286,6 +311,12 @@ function montreToast(texte) {
  */
 function echecLecture(e) {
   if (e?.name === 'AbortError') return;
+  // Sans cela le mini-lecteur affichait « Pause » alors que rien ne jouait (FWEBLIVE-06). La source est
+  // retirée : « Lecture » repart alors de demarreMusique() au lieu de rejouer un élément en erreur.
+  lecteur.pause();
+  lecteur.removeAttribute('src');
+  lecteur.load();
+  majMini();
   signale(tr.t('music_play_failed'));
 }
 
@@ -298,7 +329,7 @@ function metadonnees(m) {
 }
 
 function ecouter(m) {
-  if (enEcoute === m.id) { lecteur.pause(); enEcoute = null; rendre(); return; }
+  if (enEcoute === m.id) { lecteur.pause(); enEcoute = null; if (store.isSessionRunning()) demarreMusique(); rendre(); return; }
   lecteur.src = m.fichier;
   lecteur.loop = false;
   lectureAuHasard = false;
@@ -363,7 +394,9 @@ function legendeAnneaux(etat, progression) {
     return tr.t(etat.jour.atteint ? 'ring_day_reached' : 'ring_day_detail', tr.duree(etat.jour.fait), tr.duree(etat.jour.objectif));
   }
   if (anneauEnAvant === 'serie') {
-    return tr.t(etat.serie.atteint ? 'ring_streak_reached' : 'ring_streak_detail', etat.serie.fait, etat.serie.objectif);
+    // Accordé au nombre (13/11, TFRLANGUE-01) : « Série : 1 jour sur 7 ».
+    return etat.serie.atteint ? tr.t('ring_streak_reached', etat.serie.fait, etat.serie.objectif)
+      : tr.p('ring_streak_detail', etat.serie.fait, etat.serie.fait, etat.serie.objectif);
   }
   return tr.p('week_gauge', progression.faits, progression.faits, progression.dus);
 }
@@ -384,7 +417,7 @@ function sauter(fois) {
 // --- Le centre des anneaux (Plaque.kt) : le hassid, puis vos chiffres ---------
 let facePlaque = 'hassid';
 let minuteurPlaque = null;
-const sansMouvement = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
+const sansMouvement = () => !!window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
 
 /** Le chiffre d'une face, la façon de l'écrire, et ce qu'il compte. */
 function contenuFace(face) {
@@ -421,9 +454,12 @@ function compter(el, cible, texte) {
 function remplirPlaque(btn) {
   if (facePlaque === 'hassid') {
     btn.setAttribute('aria-label', tr.t('rings_character_hint'));
-    btn.replaceChildren(h('img', { src: `img/${salutation(store.record()?.faite === true)}.webp`, alt: '' }));
+    // Le hassid se tient dans le ciel du moment (14/11) ; les chiffres gardent le disque clair.
+    btn.classList.add('avec-ciel');
+    btn.replaceChildren(fenetreCiel(cielMaintenant()), h('img', { src: `img/${salutation(store.record()?.faite === true)}.webp`, alt: '' }));
     return;
   }
+  btn.classList.remove('avec-ciel');
   const c = contenuFace(facePlaque);
   const anneau = Plaque.anneau(facePlaque);
   const valeur = h('div', { class: `face-valeur${anneau ? ` valeur-${anneau}` : ''}` }, c.texte(c.cible));
@@ -465,6 +501,91 @@ function tournerPlaque(vers) {
   btn.classList.remove('entree');
   btn.classList.add('sortie');
   apresAnimation(btn, 'plaque-sortie', changer);
+}
+
+// --- Le ciel du Jour (étape 3 de la refonte, 14/11 ; CielDuJour.kt, CielDessin.kt) -------
+
+/** Le ciel du moment : à l'heure du lieu des zmanim s'il est réglé, sinon à celle du téléphone. */
+function cielMaintenant() {
+  const maintenant = new Date();
+  const lieu = store.lieu();
+  if (!lieu) return Ciel.parHeure(maintenant.getHours(), maintenant.getMinutes());
+  try {
+    const z = Object.fromEntries(zmanimDuJour(lieu, jourLieu(maintenant), store.siddurNusah()).map((x) => [x.cle, x.instant]));
+    return Ciel.phase(maintenant, z, heureLieu(maintenant));
+  } catch {
+    return Ciel.parHeure(maintenant.getHours(), maintenant.getMinutes());
+  }
+}
+
+/**
+ * La fenêtre ronde au creux des anneaux : le ciel du moment, l'astre, la colline du champ où
+ * l'on sort, et la nuit le rond de lumière de la lanterne où se tient le hassid (la lueur
+ * cache aussi le liseré clair du détourage sur le sombre).
+ */
+let numeroCiel = 0;
+function fenetreCiel(phase) {
+  const c = Ciel.PALETTES[phase];
+  // Des identifiants propres à chaque dessin : la plaque se redessine, l'ancien peut traîner.
+  const n = ++numeroCiel;
+  const svg = s('svg', { class: 'ciel', viewBox: '0 0 188 188', preserveAspectRatio: 'xMidYMid slice', 'aria-hidden': 'true' });
+  const defs = s('defs');
+  const degrade = s('linearGradient', { id: `ciel-${n}`, x1: 0, y1: 0, x2: 0, y2: 1 });
+  [[0, c.haut], [0.55, c.milieu], [1, c.horizon]].forEach(([o, couleur]) => degrade.append(s('stop', { offset: o, 'stop-color': couleur })));
+  defs.append(degrade);
+  svg.append(defs, s('rect', { width: 188, height: 188, fill: `url(#ciel-${n})` }));
+  if (phase === 'nuit') {
+    const etoiles = s('g', { fill: '#FFFDF0' });
+    Ciel.ETOILES.forEach(([x, y, r]) => etoiles.append(s('circle', { cx: x, cy: y, r })));
+    const masque = s('mask', { id: `croissant-${n}` });
+    masque.append(s('rect', { width: 188, height: 188, fill: '#FFFFFF' }), s('circle', { cx: 146.7, cy: 34.5, r: 14, fill: '#000000' }));
+    defs.append(masque);
+    svg.append(etoiles, s('circle', { cx: 139, cy: 38, r: 14, fill: c.astre, mask: `url(#croissant-${n})` }));
+  } else {
+    const [x, y, r, lueur] = Ciel.ASTRES[phase];
+    const halo = s('radialGradient', { id: `astre-${n}` });
+    halo.append(s('stop', { offset: 0, 'stop-color': c.lueur, 'stop-opacity': 0.85 }), s('stop', { offset: 1, 'stop-color': c.lueur, 'stop-opacity': 0 }));
+    defs.append(halo);
+    svg.append(s('circle', { cx: x, cy: y, r: lueur, fill: `url(#astre-${n})` }), s('circle', { cx: x, cy: y, r, fill: c.astre }));
+    if (phase === 'jour') {
+      const nuages = s('g', { fill: '#FFFFFF', 'fill-opacity': 0.85 });
+      Ciel.NUAGES.forEach(([cx, cy, rx, ry]) => nuages.append(s('ellipse', { cx, cy, rx, ry })));
+      svg.append(nuages);
+    }
+  }
+  svg.append(s('path', { d: Ciel.COLLINE, fill: c.colline }));
+  if (phase === 'nuit') {
+    const lanterne = s('radialGradient', { id: `lanterne-${n}` });
+    [[0, 1], [0.5, 0.8], [1, 0]].forEach(([o, a]) => lanterne.append(s('stop', { offset: o, 'stop-color': '#FFECBA', 'stop-opacity': a })));
+    defs.append(lanterne);
+    svg.append(s('circle', { cx: 94, cy: 94, r: 117, fill: `url(#lanterne-${n})` }));
+  }
+  return svg;
+}
+
+/**
+ * Une lanterne de la semaine (14/11) : allumée quand la hitbodedout est faite, qui attend
+ * aujourd'hui, éteinte sinon ; le samedi chômé, les deux bougies de Chabbat. Les couleurs
+ * viennent de la feuille de style (app.css, « La semaine en lanternes »).
+ */
+function lanterne(etat) {
+  const svg = s('svg', { class: 'lanterne', viewBox: '0 0 28 36', width: 28, height: 36, 'aria-hidden': 'true' });
+  if (etat === 'chabbat') {
+    svg.append(
+      s('path', { class: 'flamme', d: 'M10 6.5C11.8 8.6 11.6 10.8 10 12C8.4 10.8 8.2 8.6 10 6.5ZM18 6.5C19.8 8.6 19.6 10.8 18 12C16.4 10.8 16.2 8.6 18 6.5Z' }),
+      s('path', { class: 'cire', d: 'M8.5 13h3a.5.5 0 0 1 .5.5V30H8V13.5a.5.5 0 0 1 .5-.5ZM16.5 13h3a.5.5 0 0 1 .5.5V30h-4V13.5a.5.5 0 0 1 .5-.5Z' }),
+      s('path', { class: 'socle', d: 'M7 30h14a2 2 0 0 1 0 4H7a2 2 0 0 1 0-4Z' }));
+    return svg;
+  }
+  svg.append(...[
+    s('path', { class: 'anse', d: 'M10 7a4 4 0 0 1 8 0' }),
+    s('path', { class: 'toit', d: 'M6.5 12L14 6.5L21.5 12Z' }),
+    s('path', { class: 'verre', d: 'M11 12h6a3.5 3.5 0 0 1 3.5 3.5v11a3.5 3.5 0 0 1-3.5 3.5h-6a3.5 3.5 0 0 1-3.5-3.5v-11A3.5 3.5 0 0 1 11 12Z' }),
+    etat === 'allumee' ? s('path', { class: 'flamme', d: 'M14 15.5C16.8 18.8 16.3 22.4 14 24.4C11.7 22.4 11.2 18.8 14 15.5Z' }) : null,
+    etat === 'aujourdhui' ? s('path', { class: 'meche', d: 'M14 21.5v3' }) : null,
+    s('path', { class: 'socle', d: 'M8 30h12a2 2 0 0 1 0 4H8a2 2 0 0 1 0-4Z' }),
+  ].filter(Boolean));
+  return svg;
 }
 
 function plaqueAccueil() {
@@ -520,19 +641,20 @@ function panneauAujourdhui() {
   const semaine = store.currentWeek();
   const progression = JaugeSemaine.progression(semaine);
   const etat = store.anneaux();
-  const nomJour = new Intl.DateTimeFormat(tr.langue, { weekday: 'short', timeZone: 'UTC' });
+  const nomJour = new Intl.DateTimeFormat(tr.locale, { weekday: 'short', timeZone: 'UTC' });
 
-  const bouton = store.isSessionRunning() ? tr.t('action_back_to_session')
-    : fait ? tr.t('action_another_session')
-      : tr.t('action_start_session', tr.duree(store.targetMinutes()));
-
-  const sujet = store.sessionTheme();
-  const morceau = store.musicEnabled() ? morceauChoisi() : null;
+  // En tête du Jour (13/11) : la date hébraïque ouvre le ciel (zmanim, calendrier, hilloulot,
+  // boussole), la roue les réglages. Les deux étaient des onglets.
+  const dateHebraique = jourJuif(isoLocal(new Date()), store.inIsrael(), mukafChoma()).dateHebraique;
+  const ciel = cielMaintenant();
 
   // Trois blocs : en-tête, anneaux, actions. Ils s'empilent ; sur un
   // téléphone couché, les anneaux passent à côté (app.css, « Téléphone couché »).
   return h('div', { class: 'contenu accueil' }, h('div', { class: 'accueil-tete' },
-    h('div', { class: 'marque' }, tr.t('app_name')),
+    h('div', { class: 'jour-entete' },
+      h('button', { type: 'button', class: 'puce-ciel', 'data-ciel': ciel, 'aria-label': tr.t('jour_ciel', dateHebraique), onclick: () => ouvrir('zmanim') },
+        h('span', { class: 'icone-ciel', 'aria-hidden': 'true' }), h('span', { lang: 'he', dir: 'rtl' }, dateHebraique), h('span', { class: 'chevron', 'aria-hidden': 'true' })),
+      h('button', { type: 'button', class: 'roue-reglages', 'aria-label': tr.t('settings_title'), onclick: () => ouvrir('reglages') })),
     prenom ? h('div', { class: 'salut' }, tr.t(Salutation.cle(new Date().getHours()), prenom)) : null,
     // Sans prénom, l'état du jour prend la place du titre.
     // Comme Android : en cours, faite, jour sans obligation, ou pas encore faite.
@@ -553,19 +675,15 @@ function panneauAujourdhui() {
     h('div', { class: 'accueil-jauge' }, h('div', { class: 'jauge' },
     // L'image des anneaux porte la description ; la plaque, touchable, reste à part (audit du 16/10).
     decrire(anneaux(etat), tr.t('rings_description',
-      tr.duree(etat.jour.fait), tr.duree(etat.jour.objectif), etat.semaine.fait, etat.semaine.objectif, etat.serie.fait, etat.serie.objectif)),
+      tr.duree(etat.jour.fait), tr.duree(etat.jour.objectif),
+      tr.p('ring_week_detail', etat.semaine.fait, etat.semaine.fait, etat.semaine.objectif),
+      tr.p('ring_streak_detail', etat.serie.fait, etat.serie.fait, etat.serie.objectif))),
     plaqueAccueil()),
     h('div', { class: `jauge-legende${anneauEnAvant ? ` legende-${anneauEnAvant}` : ''}` }, legendeAnneaux(etat, progression)),
     lignePaliers()),
 
-    h('div', { class: 'accueil-actions' }, h('button', { class: 'principal', onclick: () => ouvrir('seance') }, bouton),
-
-    h('div', { class: 'pastilles' },
-      pastille(tr.t('start_duration'), tr.duree(store.targetMinutes()), () => choisirDuree((m) => {
-        store.setTargetMinutes(m); rendre();
-      })),
-      pastille(tr.t('start_theme'), sujet ? tr.t(`theme_${sujet}`) : tr.t('session_theme_none_short'), choisirSujet),
-      pastille(tr.t('start_music'), morceau ? (store.musicShuffle() ? tr.t('music_shuffle_short') : titreMorceau(morceau)) : tr.t('start_music_off'), () => ouvrir('musique'))),
+    // « Commencer » et ses pastilles ont rejoint la barre de départ et son volet (13/11).
+    h('div', { class: 'accueil-actions' },
 
     h('div', { class: 'semaine' }, semaine.map((j) => {
       const repos = j.shabbat && j.exempt;
@@ -573,7 +691,9 @@ function panneauAujourdhui() {
       // Un jour fait touché montre sa durée à la place du ✓ (14/10) ; touché encore, le ✓ revient.
       const minutes = store.record(j.date)?.minutes ?? 0;
       const montre = j.done && joursMontres.has(j.date);
-      const marque = montre ? JaugeSemaine.dureeCourte(minutes) : j.done ? '✓' : repos ? tr.t('week_shabbat_mark') : j.exempt ? '—' : String(Number(j.date.slice(8)));
+      // La semaine en lanternes (14/11) : la lanterne dit si c'est fait ; le numéro reste dessous.
+      const marque = montre ? JaugeSemaine.dureeCourte(minutes) : j.exempt && !j.done && !repos ? '—' : String(Number(j.date.slice(8)));
+      const etat = j.done ? 'allumee' : repos ? 'chabbat' : !j.exempt && j.date === store.today() ? 'aujourdhui' : 'eteinte';
       const etiquette = j.done ? `${tr.t('week_done')} · ${tr.duree(minutes)}` : repos ? tr.t('settings_shabbat')
         : j.exempt ? tr.t('gate_exempt_title') : tr.t('week_todo');
       const classe = ['jour', j.done ? 'fait' : j.exempt ? 'exempte' : '', repos && !j.done ? 'repos' : '',
@@ -586,21 +706,106 @@ function panneauAujourdhui() {
       return h(ouvrable ? 'button' : 'div', { class: `${classe}${montre ? ' montre-duree' : ''}`,
         ...(ouvrable ? { type: 'button', onclick: () => ajoutTemps(j.date, j.done ? bascule : null) } : { role: 'img' }), 'aria-label': nom },
         h('span', { class: 'nom', 'aria-hidden': 'true' }, nomJour.format(new Date(`${j.date}T12:00:00Z`))),
+        h('span', { class: `lanterne-pied ${etat}`, 'aria-hidden': 'true' }, lanterne(etat)),
         h('span', { class: 'marque-jour', 'aria-hidden': 'true' }, marque));
     })),
 
     fait ? h('button', { class: 'texte-bouton', onclick: () => ecrireNote(store.today(), rendre) }, tr.t('action_write_note')) : null,
+    !store.isSessionRunning()
+      ? h('button', { class: 'texte-bouton', onclick: () => ouvrir('seance') }, tr.t('start_prepare')) : null,
     // « Je l'ai faite sans le téléphone » (MainActivity.today_offline, 02/11) : tant qu'aujourd'hui
     // ou hier reste à inscrire, et hors séance en cours.
     (!fait || hierOuvert()) && !store.isSessionRunning()
       ? h('button', { class: 'texte-bouton', onclick: declarerHorsTelephone }, tr.t('action_done_offline')) : null,
+    // La garde des données (13/11, FWEBCODE-01) : installer, importer ou exporter, un avis à la fois.
+    avisDonnees(),
     // L'accueil selon l'heure (14/10) : la prière du moment, Birkat haLevana les soirs de la fenêtre.
-    ...momentAccueil(),
-    // Les trophées et les paliers, en bas de la page (11/10).
-    // Les trophées et « Mon parcours », côte à côte (19/10).
-    h('div', { class: 'boutons-bas' },
-      h('button', { class: 'bouton-trophees', onclick: () => ouvrir('paliers') }, tr.t('trophees_paliers')),
-      h('button', { class: 'bouton-trophees', onclick: () => ouvrir('parcours') }, tr.t('parcours_title')))));
+    // Les trophées et « Mon parcours » sont dans Le Chemin (13/11).
+    ...momentAccueil()));
+}
+
+/**
+ * La barre de départ (13/11) : visible dans les trois lieux, au-dessus des onglets. Le bouton
+ * ouvre la séance ; la flèche, le volet de ses réglages (MainActivity.montrerVolet).
+ */
+function barreDepart() {
+  const fait = store.record()?.faite === true;
+  const libelle = store.isSessionRunning() ? tr.t('action_back_to_session')
+    : fait ? tr.t('action_another_session')
+      : tr.t('action_start_session', tr.duree(store.targetMinutes()));
+  return h('div', { class: 'depart' },
+    // Un toucher démarre, comme sur Android (FPRODUIT-04) ; l'écran de préparation reste à « Autrement » sous la semaine.
+    h('button', { class: 'principal', onclick: () => (store.isSessionRunning() ? ouvrir('seance') : commencer(store.targetMinutes())) }, libelle),
+    h('button', { type: 'button', class: 'depart-regler', 'aria-label': tr.t('depart_regler'), 'aria-haspopup': 'dialog', onclick: voletDepart }));
+}
+
+/** Le volet de la séance : ce avec quoi on y entre — la durée, le sujet, la musique. Rien n'y est obligatoire. */
+function voletDepart() {
+  const sujet = store.sessionTheme();
+  feuille(tr.t('depart_titre'), (f, fermer) => {
+    f.classList.add('volet-depart');
+    f.append(
+      ligne({ nom: tr.t('start_duration'), etat: tr.duree(store.targetMinutes()),
+        onclick: () => { fermer(); choisirDuree((m) => { store.setTargetMinutes(m); rendre(); }); } }),
+      ligne({ nom: tr.t('start_theme'), etat: sujet ? tr.t(`theme_${sujet}`) : tr.t('session_theme_none_short'),
+        onclick: () => { fermer(); choisirSujet(); } }),
+      ligne({ nom: tr.t('music_title'), etat: etatMusique(), onclick: () => { fermer(); ouvrir('musique'); } }));
+  });
+}
+
+/**
+ * Le Chemin (13/11) : ce qui a été fait. La série, la meilleure, le total ; les minutes du
+ * mois en barres ; puis le journal, le parcours et les trophées (MainActivity.renderChemin).
+ */
+function panneauChemin() {
+  const faites = store.joursFaits().size;
+  const total = tr.duree(store.totalMinutes());
+  const chiffre = (valeur, legende) => h('div', { class: 'chemin-chiffre' },
+    h('div', { class: 'chemin-valeur' }, String(valeur)), h('div', { class: 'chemin-legende' }, tr.t(legende)));
+  const p = pratique();
+  const prochain = Trophees.prochain(p);
+  const nomMois = new Intl.DateTimeFormat(tr.locale, { month: 'long', year: 'numeric' }).format(new Date());
+  return h('div', { class: 'contenu chemin' },
+    h('h1', { class: 'titre-ecran' }, tr.t('nav_chemin')),
+    h('div', { class: 'carte carte-chemin' },
+      h('div', { class: 'chemin-chiffres' },
+        chiffre(store.streak(), 'chemin_stat_serie'), chiffre(store.meilleureSerie(), 'chemin_stat_meilleure'), chiffre(total, 'chemin_stat_total')),
+      h('p', { class: 'chemin-mois' }, nomMois.charAt(0).toLocaleUpperCase(tr.locale) + nomMois.slice(1)),
+      graphiqueDuMois().graphique),
+    h('div', { class: 'carte' },
+      ligne({ nom: tr.t('nav_journal'), etat: tr.p('journal_summary', faites, faites, total), onclick: () => ouvrir('journal') }),
+      ligne({ nom: tr.t('parcours_title'), etat: tr.t('chemin_parcours_hint'), onclick: () => ouvrir('parcours') }),
+      ligne({ nom: tr.t('chemin_trophees'), onclick: () => ouvrir('paliers'),
+        etat: prochain ? tr.t('accueil_prochain_trophee', descTrophee(prochain), prochain.seuil - Math.min(Trophees.valeur(p, prochain.f.cle), prochain.seuil)) : tr.t('trophees_tous') })));
+}
+
+// --- La garde des données (13/11, audit du 12/11, FWEBCODE-01) ---------------------------------
+/** Lancée depuis l'écran d'accueil du téléphone (iOS : navigator.standalone ; ailleurs : display-mode). */
+const installee = navigator.standalone === true || !!window.matchMedia?.('(display-mode: standalone)').matches;
+/** Hors de l'écran d'accueil, Safari efface ce qu'un site garde après sept jours sans visite. */
+const aInstaller = () => surIOS && !installee;
+/** Le texte de chaque avis (avis.js) ; importer et exporter mènent à « Mes données ». */
+const AVIS = { installer: ['installer_ios_web', false], importer: ['import_installe_web', true], exporter: ['export_rappel_web', true] };
+
+/** L'avis de l'accueil : un seul à la fois ; « Plus tard » le referme pour trente jours. */
+function avisDonnees() {
+  const cle = avisAccueil({
+    ios: surIOS, installee, aujourdhui: store.today(), premierJour: store.premierJour(),
+    derniereSauvegarde: store.derniereSauvegarde(), reports: store.avisReportes(),
+  });
+  if (!cle) return null;
+  const [texte, versDonnees] = AVIS[cle];
+  return h('div', { class: 'carte avis-donnees', role: 'note' },
+    h('p', { class: 'avis-texte' }, tr.t(texte)),
+    h('div', { class: 'avis-actions' },
+      versDonnees ? h('button', { type: 'button', class: 'secondaire', onclick: ouvrirMesDonnees }, tr.t('section_data')) : null,
+      h('button', { type: 'button', class: 'texte-bouton', onclick: () => { store.reporteAvis(cle); rendre(); } }, tr.t('action_later'))));
+}
+
+/** Les réglages, ouverts sur la carte « Mes données » (Exporter, Importer). */
+function ouvrirMesDonnees() {
+  ouvrir('reglages');
+  requestAnimationFrame(() => app.querySelector('.carte-donnees')?.scrollIntoView({ block: 'start' }));
 }
 
 /**
@@ -609,9 +814,8 @@ function panneauAujourdhui() {
  * parcours », les chiffres montent jusqu'à leur valeur. Rien de cela quand le
  * téléphone demande moins de mouvement.
  */
-const moinsDeMouvement = () => window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
 function effetsEntree(ecran) {
-  if (moinsDeMouvement()) return;
+  if (sansMouvement()) return;
   const racine = app.firstElementChild;
   if (!racine) return;
   racine.classList.add('entree');
@@ -690,7 +894,7 @@ function rappelsDeTefila() {
   const muk = mukafChoma();
   const edot = store.siddurNusah() === 'edot';
   const ajoute = (iso, n) => { const d = new Date(`${iso}T12:00:00Z`); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
-  const jourSemaine = (iso) => { const t = new Intl.DateTimeFormat(tr.langue, { weekday: 'long', timeZone: 'UTC' }).format(new Date(`${iso}T12:00:00Z`)); return t.charAt(0).toLocaleUpperCase(tr.langue) + t.slice(1); };
+  const jourSemaine = (iso) => { const t = new Intl.DateTimeFormat(tr.locale, { weekday: 'long', timeZone: 'UTC' }).format(new Date(`${iso}T12:00:00Z`)); return t.charAt(0).toLocaleUpperCase(tr.locale) + t.slice(1); };
   const moment = (r) => {
     if (!RAPPELS_TEFILA[r.type].leSoir) return r.date === aujourdhui ? tr.t('rappel_aujourdhui') : r.date === ajoute(aujourdhui, 1) ? tr.t('rappel_demain') : jourSemaine(r.date);
     const soir = ajoute(r.date, -1);
@@ -703,7 +907,7 @@ function rappelsDeTefila() {
   const TEXTES = {
     pluie_debut: ['rappel_pluie_debut_titre', edot ? 'rappel_pluie_debut_edot' : 'rappel_pluie_debut'],
     pluie_fin: ['rappel_pluie_fin_titre', edot ? 'rappel_pluie_fin_edot' : 'rappel_pluie_fin'],
-    guechem_debut: ['rappel_guechem_titre', 'rappel_guechem_debut'], guechem_fin: ['rappel_guechem_titre', 'rappel_guechem_fin'],
+    guechem_debut: ['rappel_guechem_titre', 'rappel_guechem_debut'], guechem_fin: ['rappel_guechem_titre', cleGuechemFin(store.siddurNusah(), israel)],
     dix_jours: ['rappel_dix_jours_titre', 'rappel_dix_jours'], omer: ['rappel_omer_titre', 'rappel_omer'],
   };
   const sansGuechem = edot && (store.lieu()?.latitude ?? 0) < 0;
@@ -720,14 +924,16 @@ function momentAccueil() {
   const rappels = rappelsDeTefila();
   if (!chargeSiddur()) return rappels;
   const heure = new Date();
-  const moment = store.lieu() ? momentDuSiddour(store.lieu(), heure) : SiddurMoment.suggestion(heure.getHours(), heure.getMinutes());
+  // Pas d'office de semaine proposé un Chabbat ou un Yom tov (audit du 16/11, JourAffiche.momentOuvrable).
+  const moment = momentOuvrable(momentSiddour(heure), jourLieu(heure), heureLieu(heure).heures, store.inIsrael());
   const cartes = [...rappels];
   const t = moment ? siddur.textes.find((x) => x.id === moment) : null;
   if (t) cartes.push(carteMaintenant(t, undefined, undefined, tr.t(Salutation.mot(heureLieu(heure).heures))));
   const zone = store.lieu()?.fuseau ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
-  const l = levana(jourLieu(heure), zone, { usage: usageLevanaCourant() });
+  const l = levana(jourLieu(heure), zone, optionsLevana());
   const lv = siddur.textes.find((x) => x.id === 'birkat_halevana');
-  if (lv && typeof l.etat === 'string' && heureLieu(heure).heures >= 14) {
+  // Ni un soir de Chabbat ou de Yom tov qui n'est pas le dernier ({ pas }, audit du 16/11).
+  if (lv && store.levanaAffichee() && typeof l.etat === 'string' && heureLieu(heure).heures >= 14 && +heure < l.finMs) {
     cartes.push(h('button', { class: 'maintenant', onclick: () => { priere = lv.id; ouvrir('priere'); } },
       plateau('char_praise', 'plateau-maintenant'),
       h('span', { class: 'maintenant-corps' },
@@ -738,9 +944,13 @@ function momentAccueil() {
   // La source du jour (SourceDuJour, 19/10) : la même toute la journée, distincte du ’hizouk.
   const p = chargeBibliotheque() ? SourceDuJour.choix(bibliotheque, store.today()) : null;
   if (p) {
+    // Dans les langues de lecture, comme la carte de ’hizouk : l'hébreu et sa traduction par défaut (COUV-08).
+    const textes = SourceDuJour.textes(p, languesLecture());
+    const avecHe = textes.some(([l]) => l === 'he');
     cartes.push(h('div', { class: 'carte source-du-jour' },
       h('span', { class: 'maintenant-libelle' }, tr.t('source_du_jour')),
-      h('p', { class: 'source-du-jour-texte', lang: 'he', dir: 'rtl' }, SourceDuJour.extrait(p.texte)),
+      ...textes.map(([l, t]) => (l === 'he' ? h('p', { class: 'source-du-jour-texte', lang: 'he', dir: 'rtl' }, t)
+        : h('p', { class: `source-du-jour-traduction${avecHe ? '' : ' seule'}`, lang: l, dir: 'ltr' }, t))),
       h('p', { class: 'source-du-jour-ref' }, Reference.localise(p.source.ref, tr.langue)),
       h('div', { class: 'source-du-jour-actions' },
         // Un seul « Commencer » sur l'accueil, celui du haut : la source invite à lire.
@@ -749,13 +959,8 @@ function momentAccueil() {
   return cartes.length ? [h('div', { class: 'accueil-moment' }, ...cartes)] : [];
 }
 
-function pastille(libelle, valeur, onclick) {
-  return h('button', { class: 'pastille', onclick },
-    h('span', { class: 'libelle' }, libelle), h('span', { class: 'valeur' }, valeur));
-}
-
-function ligne({ nom, etat, onclick, aVenir = false, fin = null, class: classe = '' }) {
-  return h('button', { class: `ligne${aVenir ? ' a-venir' : ''}${classe ? ` ${classe}` : ''}`, onclick, 'aria-disabled': aVenir ? 'true' : null },
+function ligne({ nom, etat, onclick, fin = null, class: classe = '' }) {
+  return h('button', { class: `ligne${classe ? ` ${classe}` : ''}`, onclick },
     h('span', { class: 'corps' }, h('div', { class: 'nom' }, nom), etat ? h('div', { class: 'etat' }, etat) : null),
     fin, h('span', { class: 'chevron', 'aria-hidden': 'true' }));
 }
@@ -848,17 +1053,17 @@ function ecranTehilim() {
   const { jour, portion } = portionDuMois();
   const auj = new Date(`${isoLocal(new Date())}T12:00:00Z`);
   const semaine = CycleTehilim.deLaSemaine(auj.getUTCDay());
-  const nomJour = new Intl.DateTimeFormat(tr.langue, { weekday: 'long', timeZone: 'UTC' }).format(auj);
+  const nomJour = new Intl.DateTimeFormat(tr.locale, { weekday: 'long', timeZone: 'UTC' }).format(auj);
   const pret = chargeTehilim();
   const versets = pret ? tehilim.reduce((n, ch) => n + ch.length, 0) : null;
   return h('div', { class: 'ecran' }, barre(tr.t('tehilim_title')),
     h('div', { class: 'defile' }, h('div', { class: 'contenu' },
-      versets ? h('p', { class: 'indice' }, tr.t('tehilim_count', 150, versets.toLocaleString(tr.langue))) : null,
+      versets ? h('p', { class: 'indice' }, tr.t('tehilim_count', 150, versets.toLocaleString(tr.locale))) : null,
       // Les marque-pages des Tehilim (28/10), en tête : la même feuille que la Bibliothèque.
       ...[ligneSignets('t')].filter(Boolean).map((l) => h('div', { class: 'carte' }, l)),
       h('div', { class: 'carte' },
         ligne({ nom: tr.t('tehilim_month'), etat: tr.t('tehilim_month_state', nombreTehilim(jour), libellePortion(portion)), onclick: () => lire(portion) }),
-        ligne({ nom: tr.t('tehilim_week'), etat: tr.t('tehilim_week_state', nomJour.charAt(0).toLocaleUpperCase(tr.langue) + nomJour.slice(1), libellePortion(semaine)), onclick: () => lire(semaine) })),
+        ligne({ nom: tr.t('tehilim_week'), etat: tr.t('tehilim_week_state', nomJour.charAt(0).toLocaleUpperCase(tr.locale) + nomJour.slice(1), libellePortion(semaine)), onclick: () => lire(semaine) })),
       h('h2', { class: 'section' }, tr.t('tehilim_all')),
       h('div', { class: 'grille-psaumes' }, Array.from({ length: 150 }, (_, i) => i + 1).map((n) =>
         h('button', { class: 'case-psaume', 'aria-label': libellePortion(CycleTehilim.portion(n, n)), onclick: () => lire(CycleTehilim.portion(n, n)) },
@@ -1018,20 +1223,9 @@ const ECRANS_LUS = ['lecture', 'priere', 'tikkun', 'source'];
 // Les anciennes adresses du Tikoun découpé (02/11), qui mènent au texte entier (04/11).
 ECRANS_LUS.push('tikkun-trait', 'tikkun-psaume', 'tikkun-partie');
 
-/** Les chaînes nouvelles, tant qu'Android ne les a pas encore : le français. */
-const CHAINES_LECTURE = {
-  lecture_reglages: 'Réglages de lecture',
-  lecture_nuit: 'Lecture sur fond noir',
-  lecture_plus: 'Lettres plus grandes',
-  lecture_moins: 'Lettres plus petites',
-  lecture_masquer: 'Masquer le bouton',
-  lecture_masque_info: 'Bouton masqué. Touchez le texte pour le faire revenir.',
-  lecture_annuler_masque: 'Annuler',
-  lecture_replier: 'Replier',
-  lecture_taille: 'Taille du texte : %1$d %%',
-};
+/** Une clé absente doit lever une erreur, comme partout ailleurs : pas de repli français muet. */
 function tl(cle, ...args) {
-  try { return tr.t(cle, ...args); } catch { return formate(CHAINES_LECTURE[cle] ?? cle, args); }
+  return tr.t(cle, ...args);
 }
 
 // Au trait, bouts arrondis : le dessin des autres icônes de l'application.
@@ -1040,6 +1234,9 @@ const ICONES_LECTURE = {
   masquer: ['M3,12 C5,8 8.2,6 12,6 C15.8,6 19,8 21,12 C19,16 15.8,18 12,18 C8.2,18 5,16 3,12 Z', 'M9.2,12 a2.8,2.8 0 1,0 5.6,0 a2.8,2.8 0 1,0 -5.6,0', 'M4,4 L20,20'],
   replier: ['M6.5,9.5 L12,15 L17.5,9.5'],
   coche: ['M5,12.5 L10,17 L19,7.5'],
+  // Le défilement automatique (16/11) : lancer, arrêter.
+  lecture: ['M8.5,5.5 L18.5,12 L8.5,18.5 Z'],
+  pause: ['M9,6 L9,18', 'M15,6 L15,18'],
 };
 function icone(nom) {
   const svg = s('svg', { viewBox: '0 0 24 24', 'aria-hidden': 'true' });
@@ -1118,6 +1315,9 @@ function ramenerLecture() {
 }
 
 function reglagesLecture({ avecNusah, sansNuit = false }) {
+  optionsLecture = { avecNusah, sansNuit };
+  // Pendant le défilement automatique, sa commande remplace la barre (et la pastille).
+  if (defilAuto) return commandeDefilement();
   if (store.lectureMasquee()) return null;
   if (!reglagesOuverts) {
     return h('div', { class: 'lecture-ctrl' },
@@ -1146,7 +1346,7 @@ function reglagesLecture({ avecNusah, sansNuit = false }) {
     h('div', { class: 'lecture-barre', role: 'toolbar', 'aria-label': tl('lecture_reglages') },
       bouton({ class: 'lettres', lang: 'en', dir: 'ltr', 'aria-label': tl('lecture_moins'), disabled: e <= 0.8, onclick: () => echelle(e - 0.1) }, 'A−'),
       bouton({ class: 'taille', 'aria-label': tl('lecture_taille', pourcent), onclick: () => echelle(1) },
-        new Intl.NumberFormat(tr.langue, { style: 'percent' }).format(pourcent / 100)),
+        new Intl.NumberFormat(tr.locale, { style: 'percent' }).format(pourcent / 100)),
       bouton({ class: 'lettres', lang: 'en', dir: 'ltr', 'aria-label': tl('lecture_plus'), disabled: e >= 2, onclick: () => echelle(e + 0.1) }, 'A+'),
       separateur(),
       // « אA » : les langues du texte (04/11) — hébreu, français, anglais, ou deux à la fois.
@@ -1159,10 +1359,125 @@ function reglagesLecture({ avecNusah, sansNuit = false }) {
         class: 'lecture-nusah-bouton', 'aria-haspopup': 'menu', 'aria-expanded': String(choixNusahOuvert),
         onclick: () => { choixNusahOuvert = !choixNusahOuvert; rendreEtViser(choixNusahOuvert ? '.lecture-nusah [aria-checked="true"]' : '.lecture-nusah-bouton'); },
       }, tr.t('siddur_choose')) : null,
+      // Le défilement automatique (16/11) : il part sans rien fermer ; sa commande prend la place de la barre.
+      bouton({ class: 'icone-bouton lecture-defiler', 'aria-label': tl('lecture_defiler'), 'aria-pressed': 'false', onclick: demarreDefilement }, icone('lecture')),
       separateur(),
       bouton({ class: 'icone-bouton', 'aria-label': tl('lecture_masquer'), onclick: masquerLecture }, icone('masquer')),
       bouton({ class: 'icone-bouton', 'aria-label': tl('lecture_replier'), 'aria-expanded': 'true', onclick: () => { reglagesOuverts = false; choixNusahOuvert = false; rendreEtViser('.lecture-pastille'); } }, icone('replier'))));
 }
+
+// --- Le défilement automatique des textes (16/11) -------------------------------------
+// Commun à tous les écrans de lecture, comme sur Android, Nokia et iOS : dix vitesses
+// (defilement.js), le niveau gardé dans le store. Il survit à un nouveau rendu du même écran ;
+// quitter l'écran, toucher le texte, ou arriver au bout l'arrête. (À ne pas confondre avec
+// dataset.defilementAuto, le défilement posé par un écran, plus bas.)
+let defilAuto = null; // { ecran, reste, dernier, image, vitesse, verrou }
+let optionsLecture = { avecNusah: false, sansNuit: false };
+
+/** Le texte qui défile : celui de l'écran de lecture affiché. */
+function defileLu() {
+  return app.querySelector('.lu-zone > .defile');
+}
+
+/** La commande de lecture redessinée seule : sans nouveau rendu, le geste en cours sur le texte continue. */
+function remplaceCommandeLecture(viser = null) {
+  const ancien = app.querySelector('.lu-zone > .lecture-ctrl');
+  const neuf = reglagesLecture(optionsLecture);
+  if (ancien && neuf) ancien.replaceWith(neuf);
+  else if (ancien) ancien.remove();
+  else if (neuf) app.querySelector('.lu-zone')?.append(neuf);
+  if (viser) app.querySelector(viser)?.focus({ preventScroll: true });
+}
+
+function vitesseCourante() {
+  return vitesseDefilement(store.lectureDefilementVitesse(), store.lectureEchelle());
+}
+
+function demarreDefilement() {
+  const d = defileLu();
+  if (!d || defilAuto) return;
+  defilAuto = { ecran: ecranCourant(), reste: 0, dernier: null, image: 0, vitesse: vitesseCourante(), verrou: null };
+  garderEcranAllume();
+  defilAuto.image = requestAnimationFrame(avanceDefilement);
+  remplaceCommandeLecture('.lecture-defil .defil-pause');
+}
+
+/** Une image : le temps écoulé fois la vitesse, les fractions de pixel gardées pour la suivante. */
+function avanceDefilement(t) {
+  const etat = defilAuto;
+  if (!etat) return;
+  const d = defileLu();
+  if (!d) { arreteDefilement(false); return; }
+  if (etat.dernier !== null) {
+    const p = pasDefilement(etat.reste, t - etat.dernier, etat.vitesse);
+    etat.reste = p.reste;
+    if (p.pixels) d.scrollTop += p.pixels;
+  }
+  etat.dernier = t;
+  // Au bout du texte, il s'arrête seul.
+  if (d.scrollTop + d.clientHeight >= d.scrollHeight - 1) { arreteDefilement(true, '.lecture-defiler'); return; }
+  etat.image = requestAnimationFrame(avanceDefilement);
+}
+
+function arreteDefilement(redessiner = true, viser = null) {
+  const etat = defilAuto;
+  if (!etat) return;
+  defilAuto = null;
+  cancelAnimationFrame(etat.image);
+  etat.verrou?.release().catch(() => {});
+  if (redessiner) remplaceCommandeLecture(viser);
+}
+
+/** L'écran reste allumé pendant le défilement (Wake Lock, s'il existe) ; un refus ne gêne rien. */
+function garderEcranAllume() {
+  const etat = defilAuto;
+  if (!etat || etat.verrou || !navigator.wakeLock?.request) return;
+  navigator.wakeLock.request('screen')
+    .then((v) => { if (defilAuto === etat && !etat.verrou) etat.verrou = v; else v.release().catch(() => {}); })
+    .catch(() => {});
+}
+// Le verrou tombe quand la page est cachée : on le reprend au retour.
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && defilAuto) { defilAuto.verrou = null; garderEcranAllume(); }
+});
+
+function changeVitesseDefilement(delta) {
+  const n = Math.min(NIVEAU_MAX, Math.max(NIVEAU_MIN, store.lectureDefilementVitesse() + delta));
+  store.setLectureDefilementVitesse(n);
+  if (defilAuto) defilAuto.vitesse = vitesseCourante();
+  // Sur place, sans nouveau rendu : le défilement ne marque pas d'à-coup.
+  const c = app.querySelector('.lecture-defil');
+  if (!c) return;
+  const niveau = c.querySelector('.defil-niveau');
+  niveau.textContent = new Intl.NumberFormat(tr.locale).format(n);
+  niveau.setAttribute('aria-label', tl('lecture_vitesse', n));
+  c.querySelector('.defil-moins').disabled = n <= NIVEAU_MIN;
+  c.querySelector('.defil-plus').disabled = n >= NIVEAU_MAX;
+}
+
+/** La commande flottante pendant le défilement : [−] [niveau] [+] [pause]. */
+function commandeDefilement() {
+  const n = store.lectureDefilementVitesse();
+  const bouton = (attrs, ...enfants) => h('button', { type: 'button', ...attrs }, ...enfants);
+  return h('div', { class: 'lecture-ctrl' },
+    h('div', { class: 'lecture-barre lecture-defil', role: 'toolbar', 'aria-label': tl('lecture_defiler') },
+      bouton({ class: 'lettres defil-moins', lang: 'en', dir: 'ltr', 'aria-label': tl('lecture_moins_vite'), disabled: n <= NIVEAU_MIN, onclick: () => changeVitesseDefilement(-1) }, '−'),
+      h('span', { class: 'defil-niveau', role: 'status', 'aria-label': tl('lecture_vitesse', n) }, new Intl.NumberFormat(tr.locale).format(n)),
+      bouton({ class: 'lettres defil-plus', lang: 'en', dir: 'ltr', 'aria-label': tl('lecture_plus_vite'), disabled: n >= NIVEAU_MAX, onclick: () => changeVitesseDefilement(1) }, '+'),
+      h('span', { class: 'lecture-sep', 'aria-hidden': 'true' }),
+      bouton({ class: 'icone-bouton defil-pause', 'aria-label': tl('lecture_defiler_pause'), onclick: () => arreteDefilement(true, '.lecture-defiler') }, icone('pause'))));
+}
+
+// La main sur le texte (toucher, molette, glisser, clavier) arrête le défilement ; le bouton le relance.
+function mainSurLeTexte(e) {
+  if (!defilAuto || !(e.target instanceof Element)) return;
+  if (e.type === 'keydown') {
+    if (!['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' '].includes(e.key)) return;
+    if (e.target.closest('button, input, textarea, select, [contenteditable="true"]')) return;
+  } else if (!e.target.closest('.lu-zone > .defile')) return;
+  arreteDefilement();
+}
+for (const evt of ['touchstart', 'wheel', 'pointerdown', 'keydown']) document.addEventListener(evt, mainSurLeTexte, { capture: true, passive: true });
 
 
 /**
@@ -1191,7 +1506,7 @@ function ecranLu(titre, contenu, { avecNusah = false, pied = null, bande = null,
   defile.addEventListener('scroll', reveiller, { passive: true });
   let avant = 0;
   defile.addEventListener('scroll', () => {
-    const p = ctrl?.querySelector('.lecture-pastille');
+    const p = defile.parentElement?.querySelector('.lecture-pastille');
     const y = defile.scrollTop;
     if (p) {
       // En bas du texte, la pastille revient : on n'a plus à remonter pour la trouver.
@@ -1201,7 +1516,7 @@ function ecranLu(titre, contenu, { avecNusah = false, pied = null, bande = null,
     }
     avant = y;
   }, { passive: true });
-  doubleToucherPourRamener(defile, () => ctrl?.querySelector('.lecture-pastille')?.classList.remove('cachee'));
+  doubleToucherPourRamener(defile, () => defile.parentElement?.querySelector('.lecture-pastille')?.classList.remove('cachee'));
   return h('div', { class: `ecran lu${store.lectureSombre() ? ' nuit' : ''}`, style: `--echelle: ${store.lectureEchelle()}` },
     entete ?? barre(titre),
     bande,
@@ -1323,11 +1638,13 @@ function tuileLivre(hebreu, traduction, dessin, onclick) {
  */
 function ecranSiddur() {
   const pret = chargeSiddur();
-  const nomNusah = pret ? titreTexte(siddur._meta.nusah) : tr.t(NUSAH.find(([c]) => c === store.siddurNusah())?.[1] ?? 'siddur_nusah');
+  // Le nom court dans la pastille, le complet reste dans la feuille de choix (FWEBLIVE-15).
+  const nomNusah = tr.t(NUSAH.find(([c]) => c === store.siddurNusah())?.[1] ?? 'siddur_nusah');
   const heure = new Date();
   // Avec un lieu, la suggestion suit ses zmanim ; sans lieu, les heures fixes.
-  const moment = store.lieu() ? momentDuSiddour(store.lieu(), heure) : SiddurMoment.suggestion(heure.getHours(), heure.getMinutes());
-  const suggere = pret && moment ? siddur.textes.find((x) => x.id === moment) : null;
+  const moment = momentSiddour(heure);
+  const ouvrable = momentOuvrable(moment, jourLieu(heure), heureLieu(heure).heures, store.inIsrael());
+  const suggere = pret && ouvrable ? siddur.textes.find((x) => x.id === ouvrable) : null;
   // 'Hanouka (13/10) : le Hallel du jour, avec la scène de 'Hanouka, sous la prière du matin.
   const isoHeure = jourLieu(heure);
   const hallelHanouka = pret && moment === 'chaharit' && jourJuif(isoHeure, store.inIsrael()).fetes.includes('hanouka')
@@ -1347,6 +1664,8 @@ function ecranSiddur() {
       suggere ? carteMaintenant(suggere) : null,
       hallelHanouka ? carteMaintenant(hallelHanouka, 'scene_hanukkah') : null,
       ilanot ? carteMaintenant(ilanot, 'scene_nature') : null,
+      // Les bénédictions de la Méguila, du siddour, avant le livre (audit du 16/11).
+      esther && siddur.textes.some((y) => y.id === 'megila') ? carteMaintenant(siddur.textes.find((y) => y.id === 'megila'), 'char_purim') : null,
       esther ? carteMaintenant(esther, 'char_purim', () => { priere = `livre:${esther.id}`; ouvrir('priere'); }) : null,
       enteteGroupe(tr.t('siddur_books'), null),
       h('div', { class: 'livres' },
@@ -1383,10 +1702,14 @@ function ecranPriere() {
   // Après la sortie des étoiles du lieu, les autres textes relèvent aussi de demain (28/10).
   const lieuSortie = store.lieu();
   const isoMaintenant = jourLieu(maintenant);
-  const tset = lieuSortie ? zmanimDuJour(lieuSortie, isoMaintenant).find((z) => z.cle === 'tset')?.instant : null;
+  const tset = lieuSortie ? zmanimDuJour(lieuSortie, isoMaintenant, store.siddurNusah()).find((z) => z.cle === 'tset')?.instant : null;
   const jourDuTexte = jourJuif(jourDeLaPriere(x.id, isoMaintenant, heureLieu(maintenant).heures, !!tset && maintenant >= tset), store.inIsrael(), mukafChoma());
+  // La nuit (audit du 16/11, CalendrierJuif.nuit) : la Méguila n'a pas les mêmes bénédictions le soir et le matin.
+  const alot = lieuSortie ? zmanimDuJour(lieuSortie, isoMaintenant, store.siddurNusah()).find((z) => z.cle === 'alot')?.instant : null;
+  if (nuitDuLieu(heureLieu(maintenant).heures, tset ? maintenant >= tset : null, alot ? maintenant < alot : null)) jourDuTexte.conditions.add('nuit');
   const nusah = store.siddurNusah();
-  const c = conditionsPour(nusah, store.inIsrael(), jourDuTexte.conditions, store.sansTahanounFinTichri(), hemisphereSud());
+  const c = conditionsPour(nusah, store.inIsrael(), avecSansTahanoun(jourDuTexte.conditions, store.sansTahanounLe(jourDuTexte.date)),
+    store.sansTahanounFinTichri(), hemisphereSud());
   const nom = (a, condition) => tr.t(libelleJour(a.libelle, condition, nusah, c));
   // Marque-pages (15/10, SiddurLectureActivity) : un appui long sur un paragraphe le marque ou le démarque.
   const cleMarque = `${livre ? 'l' : 's'}:${x.id}`;
@@ -1401,8 +1724,10 @@ function ecranPriere() {
     const p = h('p', { class: `${b.c !== undefined ? 'consigne' : 'priere'}${marquee(si, i) ? ' marque-page' : ''}${livre ? ' marque-etude' : ''}`, lang: 'he', dir: 'rtl', 'data-place': `${si}:${i}` }, riche(b.c !== undefined ? (texte ?? b.c) : aerer(texte ?? b.t)));
     if (p.firstChild?.nodeName === 'B') p.firstChild.classList.add('premier-mot');
     // Un verset traduit (Esther, Chir HaChirim, 04/11) : la traduction sous l'hébreu, ou seule.
-    if (b.c === undefined && (b.fr || b.en)) {
-      const textes = LanguesTexte.textes(languesLecture(), b.t, b.fr, b.en);
+    // Une consigne traduite aussi (TEFILA-02 : « à dire sept fois de suite ») ; sans traduction, l'hébreu.
+    const langues = LanguesTexte.bloc(b);
+    if (langues.fr || langues.en) {
+      const textes = LanguesTexte.textes(languesLecture(), langues.he, langues.fr, langues.en);
       const avecHe = textes.some(([l]) => l === 'he');
       const traductions = textes.filter(([l]) => l !== 'he').map(([l, t]) => paraTraduction(l, t, !avecHe));
       if (traductions.length) {
@@ -1424,12 +1749,15 @@ function ecranPriere() {
   };
   // « Aujourd'hui · הַלֵּל › » : le texte à dire là ce jour-là, ouvert d'un geste ; rien hors du jour.
   // Qui prie seul (19/10) : une carte à part, jamais repliée, après Barekhou.
+  // Les notes de l'application (audit du 16/11, SiddurJour.Sorte.NOTE) : même carte, leur étiquette propre.
   const seuls = (si, i) => (idx.seuls.get(`${si}:${i}`) ?? []).filter((a) => ajoutVrai(a.si, c)).map((a) =>
     h('div', { class: 'seul-carte', lang: 'he', dir: 'rtl' },
-      h('p', { class: 'seul-etiquette' }, tr.t('siddur_seul')),
+      h('p', { class: 'seul-etiquette' }, tr.t(a.sorte === 'note' ? 'siddur_note' : 'siddur_seul')),
       a.consigne ? h('p', { class: 'seul-consigne' }, a.consigne) : null,
       h('p', { class: a.consigne ? 'seul-texte' : 'seul-consigne' }, a.texte)));
   const renvois = (si, i) => (idx.renvois.get(`${si}:${i ?? ''}`) ?? []).filter((a) => ajoutVrai(a.si, c)).map((a) => {
+    // Un rappel sans texte cible (audit du 16/11 : Moussaf de Chabbat Roch 'Hodech, de 'Hol hamoed…) : SiddurJour.Ligne.Rappel.
+    if (!a.cible && a.libelle) return h('p', { class: 'indice-jour rappel-jour' }, `${tr.t('siddur_aujourdhui')} · ${tr.t(a.libelle)}`);
     const cible = siddur.textes.find((y) => y.id === a.cible);
     return cible ? h('button', { type: 'button', class: 'renvoi-jour', lang: 'he', dir: 'rtl', onclick: () => ouvrirRenvoi(x.id, cible.id) },
       `${tr.t('siddur_aujourdhui')} · ${cible.titre.he}  ›`) : null;
@@ -1440,39 +1768,51 @@ function ecranPriere() {
     const tous = idx.indices.get(`${si}:${i}`) ?? [];
     const hors = tous.filter((a) => a.retire && !ajoutVrai(a.si, c));
     const brut = s.blocs[i].t ?? s.blocs[i].c;
-    const reduit = hors.reduce((t, a) => t.replace(a.retire, ''), brut).trim();
-    const du = tous.filter((a) => !a.retire && ajoutVrai(a.si, c));
+    const reduit = hors.length ? hors.reduce((t, a) => t.replace(a.retire, ''), brut).trim() : brut;
+    // Une fois chacune : « מגדול » vaut le Chabbat comme Roch 'Hodech (12/11).
+    const du = tous.filter((a) => !a.retire && ajoutVrai(a.si, c)).filter((a, k, l) => l.findIndex((y) => y.texte === a.texte) === k);
     const pli = hors.length && reduit !== brut
       ? ajout(nom(hors[0], hors[0].si), false, hors.map((a) => h('p', { class: 'priere hors-jour', lang: 'he', dir: 'rtl' }, a.texte)), hors[0].si) : null;
+    // Une indication fixe (audit du 16/11, « fixe ») : sans « Aujourd'hui : ».
     return [paragraphe(s, i, reduit !== brut ? reduit : undefined), pli, ...du.map((a) => h('p', { class: 'indice-jour' },
-      h('span', {}, `${tr.t('siddur_aujourdhui')} : `), h('span', { lang: 'he', dir: 'rtl' }, a.texte))), ...renvois(si, i)];
+      a.fixe ? null : h('span', {}, `${tr.t('siddur_aujourdhui')} : `), h('span', { lang: 'he', dir: 'rtl' }, a.texte))), ...renvois(si, i)];
   };
   // Le corps d'une section, sans son titre : construit d'un coup pour une prière, à la demande pour un livre.
   const corpsDe = (s, si) => {
-      const section = idx.sections.get(si);
-      if (section) return [ajout(nom(section, section.si), ajoutVrai(section.si, c), s.blocs.map((_, i) => paragraphe(s, i)), section.si), ...renvois(si)];
-      const corps = [];
-      for (let i = 0; i < s.blocs.length; i++) {
-        const a = idx.blocs.get(`${si}:${i}`);
-        if (!a) { corps.push(...avecIndices(s, si, i).filter(Boolean), ...seuls(si, i)); continue; }
-        // Le groupe : les blocs suivants de même groupe, variantes comprises.
-        const membres = [];
-        while (i < s.blocs.length && idx.blocs.get(`${si}:${i}`)?.g === a.g) {
-          const m = idx.blocs.get(`${si}:${i}`);
-          const p = paragraphe(s, i);
-          if (!ajoutVrai(m.si, c)) p.classList.add('hors-jour');
-          membres.push(p);
-          i++;
-        }
-        i--;
-        corps.push(ajout(nom(a, a.racine ?? a.si), ajoutVrai(a.racine ?? a.si, c), membres, a.racine ?? a.si));
-        corps.push(...seuls(si, i));
-      }
+    const corps = [];
+    for (const partie of planSection(s, si, idx, c)) {
+      const a = partie.annotation;
+      const dernier = partie.blocs[partie.blocs.length - 1];
+      if (!a) { corps.push(...avecIndices(s, si, dernier).filter(Boolean), ...seuls(si, dernier)); continue; }
+      // Une section entière, ou un groupe : dans un groupe du jour, la variante d'un autre jour reste lisible, estompée.
+      const groupe = a.sorte === 'bloc';
+      const para = (i) => {
+        const p = paragraphe(s, i);
+        if (groupe && !ajoutVrai(idx.blocs.get(`${si}:${i}`).si, c)) p.classList.add('hors-jour');
+        return p;
+      };
+      // La double annotation (audit du 16/11, segments) : un bloc dont le « et » est faux (minyan, « תתקבל »
+      // le 9 Av) se replie à part dans son groupe ; un groupe lu garde ses repères du jour.
+      const lu = partie.etat !== 'replie';
+      const membres = !groupe ? partie.blocs.map(para) : segmentsAjout(partie.blocs, si, idx, c).flatMap((g) => g.et
+        ? [ajout(tr.t(g.libelle), false, g.blocs.map((i) => { const p = paragraphe(s, i); p.classList.add('hors-jour'); return p; }), g.et.replace(/^!/, ''))]
+        : g.blocs.flatMap((i) => [para(i), ...(lu ? (idx.indices.get(`${si}:${i}`) ?? []).filter((x) => !x.retire && ajoutVrai(x.si, c))
+          .map((x) => h('p', { class: 'indice-jour' }, x.fixe ? null : h('span', {}, `${tr.t('siddur_aujourdhui')} : `), h('span', { lang: 'he', dir: 'rtl' }, x.texte))) : [])]));
+      // Le texte ordinaire qu'une formule du jour remplace (TSIDDUR-06), ou un passage discret (12/11,
+      // SiddurJour.Annotation.discret) : tel quel quand il se dit, sans étiquette.
+      if (partie.etat === 'ordinaire') corps.push(...membres);
+      else corps.push(ajout(nom(a, partie.racine), partie.etat === 'du_jour', membres, partie.racine));
+      if (groupe) corps.push(...seuls(si, dernier));
+    }
     return [...corps, ...renvois(si)];
   };
   // Un livre sans traduction, quand on en a demandé une (04/11) : on le dit, l'hébreu reste.
   const traduitIci = x.sections.some((s) => s.blocs.some((b) => b.fr || b.en));
-  const sansTraduction = livre && LanguesTexte.manque(languesLecture(), traduitIci);
+  // Le siddour aussi : ses prières et ses consignes ne sont pas traduites, et il le dit (COUV-02).
+  const sansTraduction = LanguesTexte.manque(languesLecture(), traduitIci);
+  // Un livre traduit en partie (le Yalkout Yossef) : combien de chapitres, les autres restent en hébreu (COUV-01, TLIVRES-05).
+  const chapitresTraduits = x.sections.filter((s) => s.blocs.some((b) => !b.c && (b.fr || b.en))).length;
+  const traductionPartielle = livre && traduitIci && chapitresTraduits < x.sections.length && languesLecture() !== 'he';
   const traductionAuto = livre && traduitIci && !!x.traduction && languesLecture() !== 'he';
   // Une longue prière (Cha'harit, 04/11) se construit comme un livre, section par section à
   // l'approche de l'écran : construite et mise en page d'un coup, son ouverture gelait l'écran
@@ -1483,9 +1823,12 @@ function ecranPriere() {
   const contenu = h('div', { class: 'contenu lecture siddour' },
     sansTraduction ? h('p', { class: 'indice' }, tl('lecture_sans_traduction')) : null,
     // Une traduction automatique affichée : non relue, l'hébreu fait foi (COUV-05).
+    traductionPartielle ? h('p', { class: 'indice' }, tl('lecture_traduction_partielle', chapitresTraduits, x.sections.length)) : null,
     traductionAuto ? h('p', { class: 'indice' }, tl('lecture_traduction_auto')) : null,
-    annotations ? h('p', { class: 'indice note-ajouts' }, tr.t('siddur_jour_ajouts', jourDuTexte.dateHebraique,
+    annotations?.some((a) => a.sorte !== 'note') ? h('p', { class: 'indice note-ajouts' }, tr.t('siddur_jour_ajouts', jourDuTexte.dateHebraique,
       tr.t(store.inIsrael() ? 'region_israel' : 'region_diaspora'))) : null,
+    // Un office de semaine un Chabbat ou un Yom tov : le siddour le dit (audit du 16/11).
+    !livre && OFFICES.includes(x.id) && jourDuTexte.chome ? h('p', { class: 'indice note-ajouts' }, tr.t('siddur_semaine_chabbat')) : null,
     ...x.sections.flatMap((s, si) => {
       // Le titre traduit (04/11), sous l'hébreu ou à sa place.
       const titres = s.titre ? LanguesTexte.textes(languesLecture(), s.titre, s.titre_fr, s.titre_en) : [];
@@ -1569,7 +1912,7 @@ let texteRecherche = '';
 /** Où chercher (19/10) : tout, les prières, les halakhot, les livres ou les hilloulot (RechercheGlobale.Portee). */
 let porteeRecherche = 'tout';
 // Sans accents latins ni apostrophe typographique : « priere » trouve « Prières » (29/10).
-const nuRecherche = (t) => t.normalize('NFD').replace(/[\u0300-\u036F’‘]/g, '').replace(/<[^>]+>/g, ' ').replace(/[־׀]/g, ' ').replace(/[\u0591-\u05C7"'״׳]/g, '').replace(/\s+/g, ' ').trim().toLowerCase();
+const nuRecherche = (t) => t.normalize('NFD').replace(/[\u0300-\u036F’‘\u200D]/g, '').replace(/<[^>]+>/g, ' ').replace(/[־׀]/g, ' ').replace(/[\u0591-\u05C7"'״׳]/g, '').replace(/\s+/g, ' ').trim().toLowerCase();
 function extraitRecherche(texte, q) {
   const t = nuRecherche(texte);
   const i = Math.max(0, t.indexOf(q));
@@ -1609,6 +1952,8 @@ function ecranRecherche() {
     yalkutDuJour(); livreDuJour();
     const total = sid.length + liv.length + yy.length + bih.length + hil.length;
     groupes.push(h('p', { class: 'jour-sous-titre' }, tr.t('hilloulot_resultats', total)));
+    // Rien trouvé : on dit où l'on cherche, pour qu'un mot français ne passe pas pour une absence (FWEBLIVE-11).
+    if (total === 0 && !/[\u0590-\u05FF]/.test(q)) groupes.push(h('p', { class: 'indice', 'aria-live': 'polite' }, tr.t('recherche_aucun_web')));
     const groupe = (nom, l) => (l.length ? [h('h2', { class: 'section' }, tr.t(nom)), ...l] : []);
     // Les titres des groupes reprennent les noms des filtres (audit 1.390).
     groupes.push(...groupe('recherche_tefilot', sid.map((r) => resultat(r.t.titre.he, r.extrait, () => { priere = r.t.id; ouvrir('priere'); }))));
@@ -1857,7 +2202,9 @@ const ouvrirCle = (cle) => { priere = cle.startsWith('l:') ? `livre:${cle.slice(
 
 /** La ligne « סימניות · n » (28/10) : tous les marque-pages, ou ceux d'un recueil (« s », « l »). */
 function ligneSignets(recueil = null) {
-  const marques = store.marques().filter((m) => (!recueil || m.cle.startsWith(`${recueil}:`)) && titreCle(m.cle));
+  // Un marque-page du siddour est lié à son noussa'h (FLECTURE-09) ; livres et Tehilim n'en ont pas.
+  const nusah = store.siddurNusah();
+  const marques = store.marques().filter((m) => (!recueil || m.cle.startsWith(`${recueil}:`)) && titreCle(m.cle) && (!m.nusah || m.nusah === nusah));
   return marques.length ? ligne({ nom: h('span', { class: 'nom-marque' }, iconeMarque(recueil === 'l', 18), tr.t('marques_titre')), etat: String(marques.length),
     onclick: () => listeSignets(marques, titreCle, ouvrirSignet) }) : null;
 }
@@ -1865,7 +2212,8 @@ function ligneSignets(recueil = null) {
 /** Ouvre le texte d'un marque-page, à sa place : un paragraphe du siddour ou d'un livre, ou un verset des Tehilim. */
 function ouvrirSignet(m) {
   marqueAOuvrir = m;
-  if (m.cle === CLE_TEHILIM) { lire(CycleTehilim.portion(m.section, m.section)); return; }
+  // Borné comme TehilimLectureActivity : un marque-page déjà gardé hors de 1 à 150 n'ouvre plus un écran vide.
+  if (m.cle === CLE_TEHILIM) { const n = Math.min(150, Math.max(1, m.section)); lire(CycleTehilim.portion(n, n)); return; }
   ouvrirCle(m.cle);
 }
 
@@ -2064,12 +2412,14 @@ function ecranTikkun() {
       b.formule ? h('p', { class: 'verset formule' }, b.formule) : null,
       ...paragraphesTraduits(b.paragraphes, b.paragraphes_fr, b.paragraphes_en, paragraphe));
   }
-  const fini = () => {
+  // Le bouton est visible dès la première ligne : on confirme avant de noter (FLECTURE-12), par la
+  // feuille du site et non window.confirm, muet dans une page encadrée ou certains navigateurs intégrés.
+  const fini = () => confirmer(tr.t('tikkun_title'), tr.t('tikkun_flow_confirm'), tr.t('tikkun_flow_done'), () => {
     // Tout dire d'un trait vaut les dix psaumes.
     for (const p of tikkun.psaumes) store.setTikkunDone(p.numero, true);
     retour();
     feterTikkun();
-  };
+  });
   // Pas d'image dans une prière (13/10).
   return ecranLu(tr.t('tikkun_title'), h('div', { class: 'contenu lecture tikkun' },
     h('div', { class: 'psaume', lang: 'he', dir: 'rtl' }, blocs)), {
@@ -2103,7 +2453,9 @@ function ecranLivres() {
         h('div', { class: 'carte carte-sections' }, livres.textes.filter((x) => x.groupe === g.cle).map((x) =>
           ligneHebreu(x.titre.he, [titreTexte(x.titre) !== x.titre.he ? titreTexte(x.titre) : null, tr.p('livre_chapitres', x.chapitres ?? x.sections?.length ?? 0)].filter(Boolean).join(' · '),
             () => { priere = `livre:${x.id}`; ouvrir('priere'); }))),
-      ]) : []))));
+      ]) : []),
+      // La licence du Yalkout Yossef et l'origine des traductions, au pied de la liste (TLIVRES-02, COUV-05).
+      ...tr.t('livres_pied').split('\n').map((l) => h('p', { class: 'indice', dir: 'auto' }, l)))));
 }
 
 /**
@@ -2129,16 +2481,18 @@ function ecranHizouk() {
   return h('div', { class: 'ecran avec-bandeau' },
     bandeau(tr.t('chizuk_demande_title'), { puce: h('p', { class: 'bandeau-sous-titre' }, tr.t('chizuk_demande_hint')), dessin: 'char_open_arms' }),
     h('div', { class: 'defile' }, h('div', { class: 'contenu hizouk' },
-      item ? (() => { const c = carteChizuk({ moment: 'demande', item }); if (change && !moinsDeMouvement()) c.classList.add('fondu-neuf'); return c; })() : null,
+      item ? (() => { const c = carteChizuk({ moment: 'demande', item }); if (change && !sansMouvement()) c.classList.add('fondu-neuf'); return c; })() : null,
       item ? h('div', { class: 'hizouk-actions' },
         h('button', { class: 'secondaire', onclick: () => { hizouk = ChizukBag.tirer(store, chizuk, 'demande'); hizoukChange = true; rendre(); } }, tr.t('chizuk_autre')),
         h('button', { class: 'secondaire', 'aria-pressed': garde ? 'true' : 'false', onclick: () => { store.basculerChizukFavori(item.id); rendre(); } },
           tr.t(garde ? 'chizuk_garde' : 'chizuk_garder')),
         h('button', { class: 'secondaire', onclick: partager }, tr.t('chizuk_partager'))) : null,
+      // Une traduction affichée : on dit d'où elle vient (COUV-05).
+      item && languesLecture() !== 'he' ? h('p', { class: 'indice' }, tl('lecture_traduction_auto')) : null,
       h('button', { class: 'principal', onclick: () => ouvrir('seance') }, tr.t('chizuk_commencer')),
       gardes.length ? h('h2', { class: 'section' }, tr.t('chizuk_favoris')) : null,
       gardes.length ? h('div', { class: 'carte' }, gardes.map((x) =>
-        h('button', { class: 'hizouk-garde', onclick: () => { hizouk = x; hizoukChange = true; rendre(); document.querySelector('.defile')?.scrollTo({ top: 0, behavior: moinsDeMouvement() ? 'auto' : 'smooth' }); } },
+        h('button', { class: 'hizouk-garde', onclick: () => { hizouk = x; hizoukChange = true; rendre(); document.querySelector('.defile')?.scrollTo({ top: 0, behavior: sansMouvement() ? 'auto' : 'smooth' }); } },
           h('span', { class: 'hizouk-garde-texte' }, ChizukRules.traduction(x, tr.langue) || ChizukRules.hebreu(chizuk, x)),
           h('span', { class: 'hizouk-ref' }, Reference.localise(x.ref, tr.langue))))) : null)));
 }
@@ -2174,6 +2528,8 @@ function ecranSource() {
         h('p', { class: 'source-ref' }, Reference.localise(e.ref, tr.langue)))),
     h('div', { class: 'carte carte-texte psaume', lang: 'he', dir: 'rtl' },
       paragraphesTraduits(LibraryRules.paragraphes(bibliotheque, e), e.paragraphes_fr, e.paragraphes_en, (p) => h('p', { class: 'verset paragraphe-source' }, p))),
+    // Des traductions affichées : on dit d'où elles viennent (COUV-05).
+    languesLecture() !== 'he' && (e.paragraphes_fr?.length || e.paragraphes_en?.length) ? h('p', { class: 'indice' }, tl('lecture_traduction_auto')) : null,
     // Ni note ni édition sous le texte : l'attribution passe par le lien vers Sefaria.
     e.url ? h('a', { class: 'principal lien-sefaria', href: e.url, target: '_blank', rel: 'noopener noreferrer' }, tr.t('library_open_sefaria')) : null));
 }
@@ -2225,7 +2581,7 @@ function graphiqueDuMois() {
   const auj = new Date();
   const minutes = JournalPlus.minutesDuMois(store.minutesParJour(), auj.getFullYear(), auj.getMonth() + 1);
   const plus = Math.max(1, ...minutes);
-  const nomMois = new Intl.DateTimeFormat(tr.langue, { month: 'long', year: 'numeric' }).format(auj);
+  const nomMois = new Intl.DateTimeFormat(tr.locale, { month: 'long', year: 'numeric' }).format(auj);
   const graphique = h('div', { class: 'journal-graphique', role: 'img', 'aria-label': tr.t('journal_graphique', nomMois) },
     minutes.map((m, k) => h('span', {
       class: `journal-barre${k + 1 === auj.getDate() ? ' aujourdhui' : ''}${m > 0 ? ' faite' : ''}`,
@@ -2245,12 +2601,12 @@ function ecranJournal() {
   const { graphique } = graphiqueDuMois();
   // Le journal enrichi (JournalActivity, 02/11) : l'humeur, la gratitude et la chose à travailler sous la note.
   const notes = store.journalPlusTout();
-  const formatJour = new Intl.DateTimeFormat(tr.langue, { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+  const formatJour = new Intl.DateTimeFormat(tr.locale, { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
   const dateLisible = (iso) => {
     const [y, m, d] = iso.split('-').map(Number);
     if (!y || !m || !d) return iso;
     const t = formatJour.format(new Date(y, m - 1, d));
-    return t.charAt(0).toLocaleUpperCase(tr.langue) + t.slice(1);
+    return t.charAt(0).toLocaleUpperCase(tr.locale) + t.slice(1);
   };
   const contenu = jours.length === 0
     ? h('div', { class: 'carte journal-vide' }, h('p', {}, tr.t('journal_empty')),
@@ -2271,45 +2627,55 @@ function ecranJournal() {
     h('div', { class: 'defile' }, h('div', { class: 'contenu' }, contenu)));
 }
 
+/**
+ * Les Livres (13/11) : trois rayons classés par geste — prier, étudier, se renforcer — au lieu
+ * d'une liste. Chaque couverture porte le titre du livre en hébreu, et son nom dans la langue
+ * de l'application en pied (sauf en hébreu, où ce serait deux fois le même mot).
+ */
+function couverture(couleur, he, nom, onclick) {
+  return h('button', { type: 'button', class: `couverture couv-${couleur}`, 'aria-label': nom, onclick },
+    h('span', { class: 'couv-titre', lang: 'he', dir: 'rtl', 'aria-hidden': 'true' }, tr.t(he)),
+    tr.langue === 'he' ? null : h('span', { class: 'couv-nom', 'aria-hidden': 'true' }, nom));
+}
+function rayon(titre, livres, etats = []) {
+  return [h('h2', { class: 'rayon-titre' }, tr.t(titre)),
+    h('div', { class: 'rayon' }, livres),
+    h('div', { class: 'etagere', 'aria-hidden': 'true' }),
+    ...etats.filter(Boolean).map((e) => h('p', { class: 'rayon-etat' }, e))];
+}
 function panneauTextes() {
-  return h('div', { class: 'contenu' },
+  const iso = isoLocal(new Date());
+  return h('div', { class: 'contenu rayonnage' },
     h('h1', { class: 'titre-ecran' }, tr.t('nav_texts')),
     // La recherche dans toute l'application (14/10), puis la reprise et les favoris.
     h('button', { class: 'secondaire bouton-recherche', onclick: () => { texteRecherche = ''; ouvrir('recherche'); } }, tr.t('recherche_indice')),
     repriseFavoris(),
-    h('div', { class: 'carte' },
-      ligne({ nom: tr.t('siddur_title'), etat: tr.t('siddur_hint'), onclick: () => ouvrir('siddur') }),
-      // Tehilim est le premier texte lisible sur le web (04/10).
-      ligne({ nom: tr.t('tehilim_title'), etat: tr.t('tehilim_today', libellePortion(portionDuMois().portion)), onclick: () => ouvrir('tehilim') }),
-      // Le Tikoun, lu d'un trait (04/10).
-      ligne({ nom: tr.t('tikkun_title'), etat: etatTikkun(), onclick: () => ouvrir('tikkun') }),
-      // Les textes arrivent à l'étape 4.
-      ligne({ nom: tr.t('tefilot_title'), etat: tr.t('tefilot_hint'), onclick: () => ouvrir('tefilot') }),
-      // Les livres entiers (13/10), puis les sources de la hitbodedout.
-      ligne({ nom: tr.t('livres_title'), etat: tr.t('livres_hint'), onclick: () => ouvrir('livres') }),
-      ligne({ nom: tr.t('library_title'), etat: tr.t('library_hint'), onclick: () => ouvrir('bibliotheque') }),
-      ligne({ nom: tr.t('chizuk_demande_title'), etat: tr.t('chizuk_demande_hint'), onclick: () => { hizouk = null; ouvrir('hizouk'); } }),
-      ligne({ nom: tr.t('tips_title'), etat: tr.t('tips_hint'), onclick: () => ouvrir('conseils') })),
-    h('h2', { class: 'section' }, tr.t('section_around')),
-    h('div', { class: 'carte' },
-      ligne({ nom: tr.t('music_title'), etat: etatMusique(), onclick: () => ouvrir('musique') }),
-      ligne({ nom: tr.t('settings_title'), onclick: () => ouvrir('reglages') })));
+    ...rayon('rayon_prier', [
+      couverture('vert', 'couv_siddur', tr.t('siddur_title'), () => ouvrir('siddur')),
+      couverture('bleu', 'couv_tehilim', tr.t('tehilim_title'), () => ouvrir('tehilim')),
+      couverture('clair', 'couv_tikkun', tr.t('tikkun_title'), () => ouvrir('tikkun')),
+      couverture('violet', 'couv_tefilot', tr.t('tefilot_title'), () => ouvrir('tefilot')),
+    ], [etatTikkun(), tr.t('tehilim_today', libellePortion(portionDuMois().portion))]),
+    ...rayon('rayon_etudier', [
+      couverture('brun', 'couv_sources', tr.t('library_title'), () => ouvrir('bibliotheque')),
+      couverture('parchemin', 'couv_livres', tr.t('livres_title'), () => ouvrir('livres')),
+      couverture('petrole', 'couv_halakha', tr.t('halakha_title'), () => { jourHalakha = iso; rechercheHalakhaTexte = ''; ouvrir('halakha'); }),
+    ]),
+    ...rayon('rayon_renforcer', [
+      couverture('menthe', 'couv_chizuk', tr.t('chizuk_demande_title'), () => { hizouk = null; ouvrir('hizouk'); }),
+      couverture('vert', 'couv_conseils', tr.t('tips_title'), () => ouvrir('conseils')),
+    ]));
 }
 
 function onglets() {
-  // Les cinq onglets d'Android (02/11) : le journal, longtemps masqué, a maintenant son écran.
-  const items = [
-    ['aujourdhui', 'nav_today'], ['textes', 'nav_texts'], ['zmanim', 'nav_zmanim'], ['journal', 'nav_journal'], ['reglages', 'settings_title'],
-  ];
+  // Trois lieux depuis la refonte du 13/11 : Le Jour, Les Livres, Le Chemin. Zmanim et Réglages
+  // sont en tête du Jour ; le journal, dans Le Chemin.
+  const items = [['aujourdhui', 'nav_today'], ['textes', 'nav_texts'], ['chemin', 'nav_chemin']];
   return h('nav', { class: 'onglets' }, items.map(([cle, nom]) => h('button', {
     class: 'onglet',
     'data-onglet': cle,
     'aria-current': cle === onglet ? 'page' : null,
-    onclick: () => {
-      // Journal et Réglages ouvrent leur écran ; l'onglet actif ne bouge pas (MainActivity.wireTabs).
-      if (cle === 'reglages' || cle === 'zmanim' || cle === 'journal') ouvrir(cle);
-      else { onglet = cle; rendre(); }
-    },
+    onclick: () => { onglet = cle; rendre(); },
   }, h('span', { class: 'icone', 'aria-hidden': 'true' }), tr.t(nom))));
 }
 
@@ -2336,7 +2702,7 @@ function horairePriere(id) {
   const lieu = store.lieu();
   if (!lieu || !['chaharit', 'minha', 'arvit'].includes(id)) return null;
   const iso = jourLieu();
-  const z = Object.fromEntries(zmanimDuJour(lieu, iso).map((x) => [x.cle, x.instant]));
+  const z = Object.fromEntries(zmanimDuJour(lieu, iso, store.siddurNusah()).map((x) => [x.cle, x.instant]));
   const hh = (c) => (z[c] ? heureZman(z[c], lieu.fuseau) : null);
   if (id === 'chaharit') return hh('szt_gra') && tr.t('banniere_chaharit', hh('szt_gra'));
   if (id === 'minha') return hh('minha_gedola') && hh('chkia') && tr.t('banniere_minha', hh('minha_gedola'), hh('chkia'));
@@ -2358,8 +2724,11 @@ function ecranMusique() {
     'aria-label': tr.t('music_enable'),
     onchange: (e) => { store.setMusicEnabled(e.target.checked); rendre(); },
   });
+  // L'omer et Bein hamétsarim : un rappel discret, sans couper la musique (audit du 16/11, YY 493:8 et 551:6).
+  const periode = periodeSansMusique(isoLocal(new Date()));
   return h('div', { class: 'ecran' }, barre(tr.t('music_title')),
     h('div', { class: 'defile' }, h('div', { class: 'contenu' },
+      periode ? h('p', { class: 'indice' }, tr.t(`music_rappel_${periode}`)) : null,
       h('div', { class: 'carte' },
         h('label', { class: 'ligne' },
           h('span', { class: 'corps' }, h('div', { class: 'nom' }, tr.t('music_enable')),
@@ -2479,13 +2848,17 @@ function confirmerRetrait(m) {
 // --- Zmanim et calendrier (ZmanimActivity, CalendrierActivity, 10/10) ----------------
 let villes = null;
 let villesDemandees = false;
+/** Rend la promesse du chargement de villes.json (vrai si la liste est là, faux si le fichier a échoué) ; un échec peut être retenté. */
+let villesPromesse = null;
 function chargeVilles() {
-  if (villes) return true;
-  if (!villesDemandees) {
+  if (villes) return Promise.resolve(true);
+  if (!villesPromesse) {
     villesDemandees = true;
-    fetch('data/villes.json').then((r) => r.json()).then((d) => { villes = d.villes; rendre(); }).catch(() => {});
+    villesPromesse = fetch('data/villes.json').then((r) => { if (!r.ok) throw new Error(r.status); return r.json(); })
+      .then((d) => { villes = d.villes; rendre(); return true; })
+      .catch(() => { villesPromesse = null; return false; });
   }
-  return false;
+  return villesPromesse;
 }
 let jourCalendrier = null;
 let moisCalendrier = null;
@@ -2493,13 +2866,16 @@ let moisCalendrier = null;
 let moisHebreuCalendrier = null;
 
 /** « 16.1 » → « 16,1 » en français : les paramètres des méthodes, à la locale. */
-const parametre = (p) => (p !== '' && !Number.isNaN(Number(p)) ? Number(p).toLocaleString(tr.langue) : p);
+const parametre = (p) => (p !== '' && !Number.isNaN(Number(p)) ? Number(p).toLocaleString(tr.locale) : p);
 
 /** Choisir le lieu : la position du téléphone, ou une ville de la liste (GeoNames). */
 /**
  * La position du téléphone (16/10 ; précise depuis le 28/10, « en fonction de la position exacte ») :
  * haute précision, un point de moins d'une minute ; sans réponse, la dernière connue, même
  * ancienne. La ville la plus proche nomme le lieu. Silencieux : aucun message, aucune demande.
+ * Choisie : « Ma position » vient d'être prise dans la liste des lieux. Ni ce choix ni une reprise
+ * ne réécrivent le statut Israël ou diaspora : un lieu de l'autre région pose la question
+ * (audit du 16/11, store.setLieu).
  */
 function localiserPosition({ etat = null, apres = rendre, silencieux = false } = {}) {
   const dire = (cle) => { if (etat && !silencieux) etat.textContent = tr.t(cle); };
@@ -2507,13 +2883,12 @@ function localiserPosition({ etat = null, apres = rendre, silencieux = false } =
   dire('zmanim_position_attente');
   const poser = (p, ancienne) => {
     const proche = villePlusProche(villes ?? [], p.coords.latitude, p.coords.longitude);
-    store.setLieu({
+    store.setLieuPosition({
       nom: proche ? tr.t('zmanim_position_pres', titreTexte(proche.nom)) : tr.t('zmanim_position'),
       latitude: p.coords.latitude, longitude: p.coords.longitude,
       // Le fuseau du téléphone ; Israël ou diaspora d'après le territoire (TerritoireIsrael, 16/10).
       altitude: proche?.altitude ?? 0, fuseau: Intl.DateTimeFormat().resolvedOptions().timeZone,
     });
-    store.setInIsrael(dansIsrael(p.coords.latitude, p.coords.longitude));
     if (ancienne && !silencieux) signale(tr.t('zmanim_position_ancienne'));
     apres();
   };
@@ -2551,23 +2926,37 @@ function choisirLieu() {
       class: 'choix',
       onclick: () => localiserPosition({ etat, apres: () => { fermer(); rendre(); } }),
     }, tr.t('zmanim_position')), etat);
-    const courant = store.lieu()?.ville;
-    for (const v of villes ?? []) {
-      f.append(h('button', {
+    // La liste se remplit à l'arrivée de villes.json (FWEBCODE-05) : « Chargement… » en attendant,
+    // un message et « Réessayer » si le fichier échoue.
+    const liste = h('div', {});
+    f.append(liste, h('p', { class: 'indice sources' }, tr.t('zmanim_source_villes')));
+    const remplir = () => {
+      if (!villes) {
+        liste.replaceChildren(h('p', { class: 'indice', 'aria-live': 'polite' }, tr.t('villes_chargement_web')));
+        chargeVilles().then((ok) => {
+          if (!liste.isConnected) return;
+          if (ok) remplir();
+          else liste.replaceChildren(h('p', { class: 'indice' }, tr.t('villes_echec_web')),
+            h('button', { class: 'choix', onclick: remplir }, tr.t('livres_reessayer_web')));
+        });
+        return;
+      }
+      const courant = store.lieu()?.ville;
+      liste.replaceChildren(...villes.map((v) => h('button', {
         class: 'choix', role: 'menuitemradio', 'aria-checked': String(v.id === courant),
         onclick: () => {
           store.setLieu({ nom: titreTexte(v.nom), latitude: v.latitude, longitude: v.longitude, altitude: v.altitude, fuseau: v.fuseau }, v);
           fermer();
           rendre();
         },
-      }, titreTexte(v.nom)));
-    }
-    f.append(h('p', { class: 'indice sources' }, tr.t('zmanim_source_villes')));
+      }, titreTexte(v.nom))));
+    };
+    remplir();
   });
 }
 
 /** « 40 min avant la chki'a · coutume de Jérusalem », quand Jérusalem est choisie. */
-const libelleAllumage = (m) => tr.t(m === 40 && mukafChoma() ? 'reglage_allumage_jerusalem' : 'reglage_allumage_valeur', m);
+const libelleAllumage = (m) => tr.t(coutumeJerusalem(store.siddurNusah(), mukafChoma(), m) ? 'reglage_allumage_jerusalem' : 'reglage_allumage_valeur', m);
 
 function choisirTahanounTichri() {
   choisirDans(tr.t('reglage_tahanoun_tichri'), [tr.t('reglage_tahanoun_tichri_dit'), tr.t('reglage_tahanoun_tichri_sans')],
@@ -2588,7 +2977,9 @@ const moisIlanotSud = (mois) => mois === 6 || mois === 7;
 function ilanotDuMois(iso) {
   const c = calendrier(iso, store.inIsrael(), false, false);
   const l = store.lieu();
-  return l && l.latitude < 0 ? moisIlanotSud(c.getJewishMonth()) : c.getJewishMonth() === 1;
+  // Audit du 16/11 : en Edot et en Ashkenaz, encore en Iyar (2) pour qui n'a pas béni en Nissan (SiddurMoment.ilanot).
+  return l && l.latitude < 0 ? moisIlanotSud(c.getJewishMonth())
+    : c.getJewishMonth() === 1 || (c.getJewishMonth() === 2 && ['edot', 'ashkenaz'].includes(store.siddurNusah()));
 }
 
 /** La Méguila avec la prière : sous Arvit, le jour hébreu de demain ; sous Cha'harit, aujourd'hui (SiddurMoment.megila). */
@@ -2658,16 +3049,28 @@ function lienExterne(libelle, url) {
   return h('a', { class: 'jour-lien', href: url, target: '_blank', rel: 'noopener' }, `${libelle} ↗`);
 }
 
+/** Après la sortie des étoiles du lieu, la date hébraïque du jour qui commence (vignette Android, FCALENDRIER-13). */
+function jourDepuisSortie(iso) {
+  const lieu = store.lieu();
+  if (!lieu || iso !== jourLieu()) return null;
+  const tset = zmanimDuJour(lieu, iso, store.siddurNusah()).find((z) => z.cle === 'tset')?.instant;
+  if (!tset || new Date() < tset) return null;
+  const [a, m, d] = iso.split('-').map(Number);
+  return jourJuif(new Date(Date.UTC(a, m - 1, d + 1, 12)).toISOString().slice(0, 10), store.inIsrael(), mukafChoma()).dateHebraique;
+}
+
 function carteJour(iso, { complet = true } = {}) {
   const j = jourJuif(iso, store.inIsrael(), mukafChoma());
   // L'omer se compte le soir, pour le jour hébreu qui commence : celui de demain.
   const [a, m, d] = iso.split('-').map(Number);
   const omerCeSoir = jourJuif(new Date(Date.UTC(a, m - 1, d + 1, 12)).toISOString().slice(0, 10), store.inIsrael()).omer;
-  const civil = new Intl.DateTimeFormat(tr.langue, { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' })
+  const civil = new Intl.DateTimeFormat(tr.locale, { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' })
     .format(new Date(`${iso}T12:00:00Z`));
   const marques = [
     ...j.fetes.map((f) => tr.t(`fete_${f}`)),
     j.paracha ? tr.t('zmanim_paracha', j.paracha) : null,
+    // Chekalim, Zakhor, Para, ha'Hodech… (audit du 16/11, CalendrierJuif.parachaSpeciale).
+    j.parachaSpeciale,
     omerCeSoir ? tr.t('zmanim_omer_ce_soir', omerCeSoir) : null,
   ].filter(Boolean);
   const dessin = illustrationDuJour(j.fetes, iso);
@@ -2675,9 +3078,12 @@ function carteJour(iso, { complet = true } = {}) {
     dessin ? h('img', { class: 'jour-illustration', src: `img/${dessin}.webp`, alt: '' }) : null,
     h('p', { class: 'jour-hebreu', lang: 'he', dir: 'rtl' }, j.dateHebraique),
     h('p', { class: 'jour-civil' }, civil),
+    (complet ? null : jourDepuisSortie(iso)) ? h('p', { class: 'jour-civil' }, tr.t('zmanim_depuis_tset', jourDepuisSortie(iso))) : null,
     marques.length ? h('div', { class: 'jour-marques' }, marques.map((m) => h('span', { class: 'marque' }, m))) : null,
     h('h3', { class: 'jour-sous-titre' }, tr.t('zmanim_ajouts_titre')),
-    h('p', { class: 'jour-ajouts' }, ajoutsDuJour(j.conditions, store.siddurNusah(), store.inIsrael(), store.sansTahanounFinTichri(), hemisphereSud()).map((k) => tr.t(k)).join(' · ')),
+    h('p', { class: 'jour-ajouts' }, ajoutsDuJour(avecSansTahanoun(j.conditions, store.sansTahanounLe(iso)), store.siddurNusah(), store.inIsrael(), store.sansTahanounFinTichri(), hemisphereSud()).map((k) => tr.t(k)).join(' · ')),
+    // Les repères du jour (audit du 16/11) : Seli'hot, chofar d'Eloul, בה״ב, Yom Kippour katan, érouv tavchilin.
+    ...reperesDuJour(iso, store.inIsrael(), store.siddurNusah()).map((k) => h('p', { class: 'levana-conseil' }, tr.t(k))),
     // Partager le jour en image (14/10, PartageJour.kt).
     h('button', { class: 'jour-lien lien-bouton', onclick: () => partagerJour(iso) }, `${tr.t('partage_jour')} ↗`),
     // Le calendrier montre tout ; l'écran Zmanim (14/10) n'y garde que le jour (sousHoraires).
@@ -2691,7 +3097,7 @@ function carteJour(iso, { complet = true } = {}) {
  */
 async function partagerJour(iso) {
   const j = jourJuif(iso, store.inIsrael(), mukafChoma());
-  const civil = new Intl.DateTimeFormat(tr.langue, { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' }).format(new Date(`${iso}T12:00:00Z`));
+  const civil = new Intl.DateTimeFormat(tr.locale, { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' }).format(new Date(`${iso}T12:00:00Z`));
   const marques = [...j.fetes.map((f) => tr.t(`fete_${f}`)), j.paracha ? tr.t('zmanim_paracha', j.paracha) : null].filter(Boolean).join('  ·  ');
   const hil = tableHilloulot() ? hilloulotPour(tableHilloulot(), iso, store.inIsrael(), store.siddurNusah() === 'ashkenaz').slice(0, 3).map((x) => x.he).join(' · ') : '';
   const [livre, debut] = apercuHalakha(iso) ?? ['', ''];
@@ -2776,7 +3182,26 @@ function dessinLune({ eclairage, croissante }, sud) {
 /** Le lieu des zmanim est au sud de l'équateur (Store.hemisphereSud). */
 const hemisphereSud = () => (store.lieu()?.latitude ?? 0) < 0;
 
+/**
+ * Le texte du moment (AccueilMoment, SiddurActivity) : avec un lieu, ses zmanim ; sinon les heures fixes.
+ * Pas de Tikoun 'hatsot la nuit de Chabbat, de fête ou de 'Hol hamoed Pessa'h (audit du 16/11).
+ */
+function momentSiddour(heure) {
+  return store.lieu() ? momentDuSiddour(store.lieu(), heure, store.inIsrael(), store.siddurNusah())
+    : SiddurMoment.suggestion(heure.getHours(), heure.getMinutes(), sansTikounHatsot(isoLocal(heure), store.inIsrael()));
+}
+
 const usageLevanaCourant = () => usageLevana(store.siddurNusah(), store.levanaUsage());
+
+/**
+ * Les options de levana() pour le lieu choisi (audit du 16/11, Levana.Horaires) : la tsét et le
+ * lever du soleil bornent les nuits ; Israël ou la diaspora pour le second jour de fête.
+ */
+function optionsLevana() {
+  const lieu = store.lieu();
+  const heureDe = (cle) => (lieu ? (d) => { const z = zmanimDuJour(lieu, d).find((x) => x.cle === cle); return z?.instant ? +z.instant : null; } : null);
+  return { usage: usageLevanaCourant(), enIsrael: store.inIsrael(), tset: heureDe('tset'), netz: heureDe('netz') };
+}
 
 /**
  * Birkat haLevana (Levana.kt ; plus réaliste le 14/10) : la lune de ce soir dessinée,
@@ -2787,10 +3212,15 @@ function blocLevana(iso) {
   const lieu = store.lieu();
   const zone = lieu?.fuseau ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
   const usage = usageLevanaCourant();
-  const l = levana(iso, zone, { usage });
-  const court = (d) => new Intl.DateTimeFormat(tr.langue, { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' }).format(new Date(`${d}T12:00:00Z`));
-  const heure = (ms) => new Intl.DateTimeFormat(tr.langue, { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', hourCycle: 'h23', timeZone: zone }).format(new Date(ms));
-  const etat = l.etat === 'ce_soir' ? tr.t('levana_ce_soir') : l.etat === 'dernier' ? tr.t('levana_dernier_soir') : tr.p('levana_dans', l.etat.dans);
+  const l = levana(iso, zone, optionsLevana());
+  const nusah = store.siddurNusah();
+  const court = (d) => new Intl.DateTimeFormat(tr.locale, { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' }).format(new Date(`${d}T12:00:00Z`));
+  const heure = (ms) => new Intl.DateTimeFormat(tr.locale, { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', hourCycle: 'h23', timeZone: zone }).format(new Date(ms));
+  const jourSeul = (ms) => new Intl.DateTimeFormat(tr.locale, { weekday: 'short', day: 'numeric', month: 'short', timeZone: zone }).format(new Date(ms));
+  const etat = l.etat === 'ce_soir' ? tr.t('levana_ce_soir') : l.etat === 'dernier' ? tr.t('levana_dernier_soir')
+    : l.etat.pas ? tr.t(l.etat.pas === 'chabbat' ? 'levana_pas_chabbat' : 'levana_pas_yom_tov') : tr.p('levana_dans', l.etat.dans);
+  // Kippour : en Edot, « notre usage » du Yalkut Yosef 426:34 ; le 9 Av : après avoir goûté (audit du 16/11).
+  const restriction = l.restriction === 'tisha_beav' ? 'levana_tisha' : nusah === 'edot' ? 'levana_kippour_edot' : 'levana_kippour';
   const pct = (x) => `${(x * 100).toFixed(2)}%`;
   return h('div', { class: 'levana' },
     h('div', { class: 'levana-tete' },
@@ -2798,10 +3228,13 @@ function blocLevana(iso) {
       h('div', { class: 'levana-corps' },
         h('h3', { class: 'jour-sous-titre' }, tr.t('levana_titre')),
         h('p', { class: `levana-etat${typeof l.etat === 'string' ? ' ouvert' : ''}` }, etat),
-        h('p', { class: 'levana-lune' }, tr.t('levana_lune', `${Math.round(l.lune.eclairage * 100)} %`, tr.t(l.lune.croissante ? 'levana_croissante' : 'levana_decroissante'))))),
-    h('p', { class: 'levana-fenetre' }, tr.t('levana_fenetre', heure(l.debutMs), heure(l.finMs))),
+        h('p', { class: 'levana-lune' }, tr.t('levana_lune', new Intl.NumberFormat(tr.locale, { style: 'percent' }).format(Math.round(l.lune.eclairage * 100) / 100), tr.t(l.lune.croissante ? 'levana_croissante' : 'levana_decroissante'))))),
+    // Sans lieu, la sortie de Kippour ou du 9 Av n'a pas d'heure : la date seule (audit du 16/11).
+    h('p', { class: 'levana-fenetre' }, tr.t('levana_fenetre', !lieu && l.restriction ? jourSeul(l.debutMs) : heure(l.debutMs), heure(l.finMs))),
     l.motsae ? h('p', { class: 'levana-conseil' }, tr.t('levana_motsae', court(l.motsae))) : null,
-    l.restriction ? h('p', { class: 'levana-conseil' }, tr.t(l.restriction === 'kippour' ? 'levana_kippour' : 'levana_tisha')) : null,
+    l.restriction ? h('p', { class: 'levana-conseil' }, tr.t(restriction)) : null,
+    l.etat.pas ? h('p', { class: 'levana-conseil' }, tr.t('levana_pas_chome_source')) : null,
+    l.jeune ? h('p', { class: 'levana-conseil' }, tr.t(nusah === 'ashkenaz' ? 'levana_jeune_ashkenaz' : 'levana_jeune')) : null,
     h('div', { class: 'levana-jauge', 'aria-hidden': 'true' },
       h('span', { class: 'levana-fil' }),
       h('span', { class: 'levana-or', style: `inset-inline-start: ${pct(l.debut)}; width: ${pct(l.fin - l.debut)}` }),
@@ -2923,7 +3356,11 @@ function blocHilloula(iso) {
   const versHilloulot = () => { jourHilloulot = iso; rechercheHilloulot = ''; ouvrir('hilloulot'); };
   return [
     h('h3', { class: 'jour-sous-titre' }, tr.t('hilloula_titre')),
-    h('div', { class: 'jour-hilloula', lang: 'he', dir: 'rtl' }, ...liste.slice(0, 5).map((x) => h('div', {}, x.he)),
+    // Le nom traduit après l'hébreu, isolé, quand il existe (VueJour.blocHilloula, THILLOULOT-10).
+    h('div', { class: 'jour-hilloula', lang: 'he', dir: 'rtl' }, ...liste.slice(0, 5).map((x) => {
+      const traduit = nomTraduitHilloula(x);
+      return h('div', {}, x.he, traduit ? [' (', h('bdi', { lang: tr.locale }, traduit), ')'] : null);
+    }),
       reste > 0 ? h('button', { class: 'jour-hilloula-reste lien-bouton', onclick: versHilloulot }, `${tr.p('hilloula_autres', reste)} ›`) : null),
     h('button', { class: 'jour-lien lien-bouton', onclick: versHilloulot }, tr.t('hilloulot_tout')),
   ];
@@ -3021,7 +3458,7 @@ function ecranHilloulot() {
     const decale = (n) => { const [a, m, d] = iso.split('-').map(Number); jourHilloulot = new Date(Date.UTC(a, m - 1, d + n, 12)).toISOString().slice(0, 10); rendre(); };
     const liste = hilloulotPour(table, iso, israel, ashkenaz);
     chargeBiosHilloulot(clesHilloulotPour(iso, israel, ashkenaz));
-    const detaillees = liste.some((x) => x.t || x.w || x.i);
+    const detaillees = liste.some((x) => x.t || x.b?.length || x.w || x.i);
     corps = [
       h('div', { class: 'carte hilloulot-jour' },
         h('div', { class: 'mois-tete' },
@@ -3057,8 +3494,8 @@ function listeZmanim(iso) {
     return h('div', { class: 'carte carte-texte' }, h('p', { class: 'message' }, tr.t('zmanim_sans_lieu')),
       h('button', { class: 'principal', onclick: choisirLieu }, tr.t('zmanim_choisir_lieu')));
   }
-  return h('div', { class: 'carte carte-zmanim' }, horaires(lieu, iso, store.inIsrael(), store.allumage()).map((z) =>
-    h('div', { class: `zman${z.cle === 'allumage' || z.cle === 'sortie' ? ' zman-chabbat' : ''}` },
+  return h('div', { class: 'carte carte-zmanim' }, horaires(lieu, iso, store.inIsrael(), store.allumage(), store.siddurNusah()).map((z) =>
+    h('div', { class: `zman${z.cle === 'allumage' || z.cle.startsWith('sortie') ? ' zman-chabbat' : ''}` },
       h('div', { class: 'zman-tete' },
         h('span', { class: 'zman-nom' }, tr.t(`zman_${z.cle}`)),
         h('span', { class: 'zman-heure', dir: 'ltr' }, z.statut === 'ok' ? heureZman(z.instant, lieu.fuseau) : '—')),
@@ -3084,6 +3521,13 @@ function ecranZmanim() {
     h('div', { class: 'defile' }, h('div', { class: 'contenu' },
       // Le jour seul, trois boutons, puis les horaires (14/10, « trop de choses avant les זמנים »).
       carteJour(iso, { complet: false }),
+      // Audit du 16/11 : le statut Israël ou diaspora suit la résidence ; un lieu de l'autre région
+      // pose la question, et le Yom tov chéni d'un voyageur a sa note.
+      questionRegion(),
+      lieu && noteYomTovCheni(iso, store.inIsrael(), dansIsrael(lieu.latitude, lieu.longitude), store.siddurNusah())
+        ? h('p', { class: 'indice' }, tr.t(noteYomTovCheni(iso, store.inIsrael(), dansIsrael(lieu.latitude, lieu.longitude), store.siddurNusah()))) : null,
+      // Japon, Nouvelle-Zélande, Australie orientale, Hawaï… : la ligne de date halakhique est discutée.
+      lieu && ligneDateDiscutee(lieu.longitude) ? h('p', { class: 'indice' }, tr.t('ligne_date_discutee')) : null,
       h('div', { class: 'boutons-jour' },
         h('button', { class: 'secondaire', onclick: () => { jourHalakha = iso; rechercheHalakhaTexte = ''; ouvrir('halakha'); } }, tr.t('zmanim_bouton_halakha')),
         h('button', { class: 'secondaire', onclick: () => { jourHilloulot = iso; rechercheHilloulot = ''; ouvrir('hilloulot'); } }, tr.t('zmanim_bouton_hilloulot')),
@@ -3095,6 +3539,18 @@ function ecranZmanim() {
       listeZmanim(iso),
       ...sousHoraires(iso),
       ...piedZmanim())));
+}
+
+/** La question du statut (ZmanimActivity.questionRegion, audit du 16/11) : seule la réponse le change. */
+function questionRegion() {
+  const proposee = store.regionProposee();
+  if (proposee === null) return null;
+  return h('div', { class: 'carte carte-texte' },
+    h('p', {}, tr.t(proposee ? 'region_proposee_israel' : 'region_proposee_diaspora')),
+    h('div', { class: 'boutons-jour' },
+      h('button', { class: 'secondaire', onclick: () => { store.setInIsrael(proposee, true); rendre(); } },
+        tr.t(proposee ? 'region_proposee_israel_oui' : 'region_proposee_diaspora_oui')),
+      h('button', { class: 'secondaire', onclick: () => { store.setInIsrael(store.inIsrael(), true); rendre(); } }, tr.t('region_proposee_garder'))));
 }
 
 // --- La boussole de Jérusalem (BoussoleActivity, 28/10) : boussole.js ------------------------
@@ -3117,14 +3573,6 @@ function directionsBoussole(lieu) {
   const gc = Boussole.grandCercle(lieu.latitude, lieu.longitude);
   const rh = Boussole.carte(lieu.latitude, lieu.longitude);
   return store.boussoleCarte() ? [rh, gc] : [gc, rh];
-}
-
-function carteBoussole() {
-  const lieu = store.lieu();
-  return h('div', { class: 'carte' }, h('button', { class: 'ligne', onclick: () => ouvrir('boussole') },
-    h('span', { class: 'corps' }, h('div', { class: 'nom' }, tr.t('boussole_title')),
-      h('div', { class: 'etat' }, lieu ? tr.t('boussole_par_rapport_nord', Boussole.degres(directionsBoussole(lieu)[0])) : tr.t('boussole_carte_sous'))),
-    h('span', { class: 'chevron', 'aria-hidden': 'true' })));
 }
 
 function consigneBoussole(gc, cap) {
@@ -3290,7 +3738,7 @@ function ecranBoussole() {
     const etat = h('p', { class: 'indice', 'aria-live': 'polite' });
     contenu.push(h('button', { class: 'secondaire boussole-position', onclick: () => localiserPosition({ etat }) }, tr.t('boussole_actualiser_position')), etat);
     const points = tr.tab('boussole_points');
-    const km = new Intl.NumberFormat(tr.langue).format(Math.round(Boussole.distanceKm(lieu.latitude, lieu.longitude)));
+    const km = new Intl.NumberFormat(tr.locale).format(Math.round(Boussole.distanceKm(lieu.latitude, lieu.longitude)));
     contenu.push(h('div', { class: 'carte carte-texte' },
       // Celle que suit le hassid en premier, mise en avant ; l'autre dessous.
       ...(() => {
@@ -3313,6 +3761,8 @@ function ecranBoussole() {
     contenu.push(h('div', { class: 'carte carte-texte' },
       h('p', { class: 'nom' }, tr.t('boussole_note_titre')),
       h('p', { class: 'indice' }, tr.t('boussole_note')),
+      // Audit du 16/11 : plus de 20° entre les deux méthodes, le conseil du minyan (MB 94:10).
+      Boussole.conseilMinyan(lieu.latitude, lieu.longitude) ? h('p', { class: 'indice' }, tr.t('boussole_minyan')) : null,
       h('p', {}, source[0], h('a', { href: SOURCE_BOUSSOLE, target: '_blank', rel: 'noopener', dir: 'ltr' }, tr.t('boussole_source_titre')), source[1] ?? '')));
   }
   return h('div', { class: 'ecran avec-bandeau' }, bandeau(tr.t('boussole_title'), { puce: lieu ? puce : null, dessin: 'char_standing_back' }),
@@ -3362,20 +3812,14 @@ let saisieVol = null;
 /** Le dernier calcul et la saisie qui l'a produit (deux passes de vol.js : on ne recalcule pas à chaque rendu). */
 let calculVol = null;
 let cleCalculVol = null;
+/** La saisie jugée invraisemblable dont l'avertissement a déjà été donné (FVOL-12). */
+let avertiVol = null;
 let minuterieVol = null;
 /** Le formulaire déplié pour modifier le vol calculé ; replié en résumé sinon (VolActivity.modifier). */
 let modifierVol = false;
 
 const libelleVol = (v) => tr.t('vol_carte_vol', v.numero || '✈', v.depart, v.arrivee);
 
-/** L'accès depuis l'onglet Zmanim : le dernier vol saisi, ou l'invitation à en saisir un. */
-function carteVol() {
-  const v = store.vol();
-  return h('div', { class: 'carte' }, h('button', { class: 'ligne', onclick: () => ouvrir('vol') },
-    h('span', { class: 'corps' }, h('div', { class: 'nom' }, tr.t('vol_title')),
-      h('div', { class: 'etat' }, v ? libelleVol(v) : tr.t('vol_carte_sous'))),
-    h('span', { class: 'chevron', 'aria-hidden': 'true' })));
-}
 
 function planDe(v) {
   const depart = aeroportsVol.find((a) => a.iata === v.depart);
@@ -3406,8 +3850,8 @@ function choisirAeroport(onChoisi) {
  * le sens de la langue.
  */
 function deuxHeures(plan, t) {
-  const jour = (fuseau) => new Intl.DateTimeFormat(tr.langue, { timeZone: fuseau, weekday: 'short', day: 'numeric' }).format(t);
-  const heure = (a) => `\u2066${new Intl.DateTimeFormat(tr.langue, { timeZone: a.fuseau, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(t)} ${a.iata}\u2069`;
+  const jour = (fuseau) => new Intl.DateTimeFormat(tr.locale, { timeZone: fuseau, weekday: 'short', day: 'numeric' }).format(t);
+  const heure = (a) => `\u2066${new Intl.DateTimeFormat(tr.locale, { timeZone: a.fuseau, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(t)} ${a.iata}\u2069`;
   const civil = (fuseau) => new Intl.DateTimeFormat('en-CA', { timeZone: fuseau }).format(t);
   const autreJour = civil(plan.arrivee.fuseau) !== civil(plan.depart.fuseau);
   return `${jour(plan.depart.fuseau)} ${heure(plan.depart)} · ${autreJour ? `${jour(plan.arrivee.fuseau)} ` : ''}${heure(plan.arrivee)}`;
@@ -3417,11 +3861,11 @@ function deuxHeures(plan, t) {
 function dureeEnMots(minutes) {
   if (minutes < 60) return minutes === 1 ? tr.t('vol_duree_une_minute') : tr.t('vol_duree_minutes', String(minutes));
   const h = Math.floor(minutes / 60), m = minutes % 60;
-  return m ? tr.t('vol_duree_heures_minutes', String(h), String(m)) : tr.t('vol_duree_heures', String(h));
+  return m ? tr.t('vol_duree_heures_minutes', String(h), String(m)) : tr.p('vol_duree_heures', h, String(h));
 }
 
 /** « mer. 28 19:20 TLV » : l'heure locale d'un aéroport (celle du billet). */
-const heureAeroport = (a, t) => `${new Intl.DateTimeFormat(tr.langue, { timeZone: a.fuseau, weekday: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(t)} ⁦${a.iata}⁩`;
+const heureAeroport = (a, t) => `${new Intl.DateTimeFormat(tr.locale, { timeZone: a.fuseau, weekday: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(t)} ⁦${a.iata}⁩`;
 
 const ecartVol = (ms) => tr.t(calculVol && calculVol.fiabilite !== 'route_prevue' ? 'vol_ecart_gps' : 'vol_ecart', `${ms < 0 ? '−' : '+'}${Math.abs(Math.round(ms / 60000))}`);
 
@@ -3435,7 +3879,8 @@ let routeVol = { attente: false, texte: '' };
 function loupeVol(v) {
   if (store.suiviDirect()) return chercherRouteVol(v);
   feuille(tr.t('vol_en_ligne_titre'), (f, fermer) => f.append(
-    h('p', {}, tr.t('vol_en_ligne_aide')),
+    // Sans relais, pas de suivi en direct sur le site (FPRODUIT-12) : l'aide ne promet que la route du vol.
+    h('p', {}, tr.t(RELAIS_VOL ? 'vol_en_ligne_aide' : 'vol_en_ligne_aide_web')),
     h('button', { class: 'principal', onclick: () => { fermer(); store.setSuiviDirect(true); chercherRouteVol(v); } }, tr.t('vol_en_ligne_oui')),
     h('button', { class: 'lien-discret', onclick: fermer }, tr.t('vol_fermer'))));
 }
@@ -3454,6 +3899,8 @@ function carteRapideVol(v, pret, calculer) {
     if (p.numero) v.numero = p.numero;
     if (p.depart) v.depart = p.depart;
     if (p.arrivee) v.arrivee = p.arrivee;
+    // Une date sans heure : l'ancien vol n'est pas repris, l'heure reste à donner (FVOL-03, SaisieVol.dateSansHeure).
+    if (Vol.dateSansHeure(p)) { v.decollage = ''; v.atterrissage = ''; }
     const jour = p.date ?? v.decollage?.slice(0, 10);
     if (jour && p.heureDepart) v.decollage = `${jour}T${p.heureDepart}`;
     let estimee = false;
@@ -3478,13 +3925,15 @@ function carteRapideVol(v, pret, calculer) {
         estimee = true;
       }
     }
+    v.arriveeEstimee = estimee;
     const compris = [p.numero ?? p.compagnie, v.depart || v.arrivee ? `${v.depart ?? '?'} → ${v.arrivee ?? '?'}` : null,
       v.decollage ? v.decollage.replace('T', ' · ') : p.date].filter(Boolean).join(' · ');
     const manque = [!v.depart && tr.t('vol_depart'), !v.arrivee && tr.t('vol_arrivee'), !v.decollage && tr.t('vol_rapide_heure')].filter(Boolean);
     rapideVol = [tr.t('vol_rapide_compris', compris), estimee ? tr.t('vol_rapide_estimee') : null,
       manque.length ? tr.t('vol_rapide_manque', manque.join(', ')) : null].filter(Boolean).join('\n');
     if (v.numero && (!v.depart || !v.arrivee)) { rendre(); return loupeVol(v); }
-    if (v.depart && v.arrivee && v.decollage && v.atterrissage) return calculer();
+    // Ni une arrivée estimée ni un jour repris de l'ancien vol ne s'enregistrent d'eux-mêmes (FVOL-03).
+    if (Vol.calculAutomatique(p, estimee) && v.depart && v.arrivee && v.decollage && v.atterrissage) return calculer();
     rendre();
   };
   return h('div', { class: 'carte carte-texte carte-rapide' },
@@ -3528,7 +3977,7 @@ function raisonVol(raison) {
   return tr.t({
     [Vol.Raison.HORS_LIGNE]: 'vol_erreur_hors_ligne', [Vol.Raison.QUOTA]: 'vol_erreur_quota',
     [Vol.Raison.ILLISIBLE]: 'vol_erreur_illisible', [Vol.Raison.POSITION_INVALIDE]: 'vol_erreur_position',
-    [Vol.Raison.RELAIS_ABSENT]: 'vol_erreur_relais_absent',
+    [Vol.Raison.RELAIS_ABSENT]: 'vol_erreur_relais_absent', [Vol.Raison.TROP_DE_DEMANDES]: 'vol_erreur_trop_de_demandes',
   }[raison] ?? 'vol_erreur_service');
 }
 
@@ -3559,7 +4008,9 @@ async function demanderDirect(indicatif) {
  * désactivé par défaut, pour la route d'un numéro (adsbdb) et le suivi en direct (OpenSky).
  */
 let formulaireVolOuvert = true;
-const interrupteurEnLigne = () => h('label', { class: 'ligne' }, h('span', { class: 'corps' }, h('div', { class: 'nom' }, tr.t('vol_direct_activer'))),
+const interrupteurEnLigne = () => h('label', { class: 'ligne' }, h('span', { class: 'corps' }, h('div', { class: 'nom' }, tr.t(RELAIS_VOL ? 'vol_direct_activer' : 'vol_direct_activer_web')),
+    // Sans relais, l'interrupteur ne commande que la route du vol (FPRODUIT-12) : il le dit.
+    RELAIS_VOL ? null : h('div', { class: 'etat' }, tr.t('vol_direct_activer_web_aide'))),
   h('input', { type: 'checkbox', role: 'switch', class: 'interrupteur', checked: store.suiviDirect(), onchange: (e) => { store.setSuiviDirect(e.target.checked); rendre(); } }));
 
 /** Le suivi en direct : l'interrupteur des services en ligne, qui dit ce qui part ; l'indicatif ; le bouton. */
@@ -3569,7 +4020,9 @@ function suiviDirect() {
   // L'interrupteur n'est plus dans le formulaire (04/11) : il vit ici, sous « Préciser la position ».
   const bloc = [interrupteurEnLigne()];
   if (!actif) return bloc;
-  if (!RELAIS_VOL) return [...bloc, h('p', { class: 'indice' }, tr.t('vol_direct_inactif'))];
+  // Sans relais, l'interrupteur ne promet que la route du vol : rien à dire d'un suivi qui n'existe pas (FWEBLIVE-13).
+  if (!RELAIS_VOL) return bloc;
+  bloc.push(h('p', { class: 'indice' }, tr.t('vol_direct_explication')));
   const champ = h('input', { type: 'text', class: 'champ-recherche champ-vol', maxlength: 9, autocapitalize: 'characters', placeholder: tr.t('vol_indicatif'), value: store.volIndicatif() || null });
   return [...bloc, champ,
     h('button', { class: 'secondaire', disabled: directVol, onclick: () => {
@@ -3601,7 +4054,7 @@ function releverGps() {
 }
 
 function positionVol(e) {
-  const n = (x) => Math.abs(x).toLocaleString(tr.langue, { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+  const n = (x) => Math.abs(x).toLocaleString(tr.locale, { minimumFractionDigits: 1, maximumFractionDigits: 1 });
   return tr.t('vol_position', tr.t(e.latitude >= 0 ? 'vol_lat_nord' : 'vol_lat_sud', n(e.latitude)),
     tr.t(e.longitude >= 0 ? 'vol_lon_est' : 'vol_lon_ouest', n(e.longitude)));
 }
@@ -3611,12 +4064,14 @@ function signatureVol(c = calculVol, maintenant = new Date()) {
   if (!c) return null;
   const p = Vol.priere(c, maintenant);
   const place = Vol.enVol(c).findIndex((e) => maintenant < e.instant);
-  return `${p?.[0]}|${p?.[1] ? +p[1] : ''}|${place}`;
+  return `${p?.[0]}|${p?.[1] ? +p[1] : ''}|${p?.[2] ? +p[2] : ''}|${place}`;
 }
 let signatureVolAffichee = null;
 
 function texteCompteVol(c = calculVol, maintenant = new Date()) {
-  const limite = c ? Vol.priere(c, maintenant)?.[1] : null;
+  const p = c ? Vol.priere(c, maintenant) : null;
+  // Pas de compte à rebours tant que la prière n'est pas ouverte (FVOL-05).
+  const limite = p && !p[2] ? p[1] : null;
   return limite ? tr.t('vol_dans', dureeEnMots(Math.max(0, Math.floor((limite - maintenant) / 60000)))) : null;
 }
 
@@ -3628,6 +4083,9 @@ function resultatsVol(c) {
   const enVol = Vol.enVol(c);
   let priere;
   if (!p) priere = [h('p', { class: 'message' }, tr.t('vol_hors_fenetre'))];
+  // Entre deux prières (13/11, FVOL-05 : de la fin de Cha'harit à min'ha guedola), aucune n'est
+  // donnée pour ouverte : la prochaine et l'heure où elle commence.
+  else if (p[2]) priere = [h('p', { class: 'vol-compte' }, tr.t('vol_prochaine', tr.t(NOMS[p[0]]))), h('p', {}, tr.t('vol_des', deuxHeures(c.plan, p[2])))];
   else {
     const [nom, limite] = p;
     const minutes = limite ? Math.max(0, Math.floor((limite - maintenant) / 60000)) : 0;
@@ -3638,10 +4096,10 @@ function resultatsVol(c) {
       ecart !== null && ecart !== undefined ? h('p', { class: 'indice' }, ecartVol(ecart)) : null];
   }
   const RESERVES = ['haute_latitude', 'absent', 'erreur', 'a_rebours'];
-  const date = (iso) => new Intl.DateTimeFormat(tr.langue, { timeZone: 'UTC', weekday: 'short', day: 'numeric', month: 'short' }).format(new Date(`${iso}T12:00:00Z`));
+  const date = (iso) => new Intl.DateTimeFormat(tr.locale, { timeZone: 'UTC', weekday: 'short', day: 'numeric', month: 'short' }).format(new Date(`${iso}T12:00:00Z`));
   return [
     // La carte prend le ciel de son heure (04/11) : aube, après-midi, nuit.
-    h('div', { class: `carte carte-texte carte-vol carte-heros ciel-${p ? p[0] : 'hors'}` }, h('p', { class: 'indice' }, tr.t('vol_priere_titre')), ...priere),
+    h('div', { class: `carte carte-texte carte-vol carte-heros ciel-${p && !p[2] ? p[0] : 'hors'}` }, h('p', { class: 'indice' }, tr.t('vol_priere_titre')), ...priere),
     h('div', { class: 'carte carte-texte carte-vol' },
       // La route prévue tient en une étiquette ; le détail du calcul se déplie.
       c.fiabilite === 'route_prevue' ? h('p', { class: 'vol-etiquette' }, tr.t('vol_fiabilite_court'))
@@ -3651,7 +4109,9 @@ function resultatsVol(c) {
       h('button', { class: 'secondaire', disabled: gpsVol, onclick: releverGps }, tr.t(gpsVol ? 'vol_gps_attente' : 'vol_gps')),
       c.plan.releve ? h('button', { class: 'lien-discret', onclick: () => { const g = store.vol(); delete g.releve; store.setVol(g); rendre(); } }, tr.t('vol_gps_oublier')) : null,
       ...suiviDirect(),
-      ...RESERVES.filter((r) => c.reserves.has(r)).map((r) => h('p', {}, tr.t(`vol_reserve_${r}`))),
+      ...RESERVES.filter((r) => c.reserves.has(r)).map((r) => h('p', {}, tr.t(`vol_reserve_${r}`),
+        // Les zmanim absents, nommés à la suite de la réserve (FVOL-11).
+        ...(r === 'absent' && c.absents?.length ? [h('br'), tr.t('vol_reserve_absents', c.absents.map((cle) => tr.t(`zman_${cle}`)).join(', '))] : []))),
       ...c.lignesDate.map((l) => h('p', {}, tr.t('vol_ligne_date', deuxHeures(c.plan, l.instant), date(l.avant), date(l.apres))))),
     friseVol(c, enVol, maintenant),
     carteJalons(c),
@@ -3700,7 +4160,7 @@ function friseVol(c, enVol, maintenant) {
   }
   lignes.push(point('bout', tr.t('vol_frise_atterrissage', c.plan.arrivee.iata), c.plan.atterrissage));
   return h('div', { class: 'carte carte-texte carte-vol' }, h('p', { class: 'indice' }, tr.t('vol_en_vol_titre')),
-    median !== null ? h('p', { class: 'frise-retard' }, tr.t('vol_frise_retard')) : null,
+    median !== null ? h('p', { class: 'frise-retard' }, tr.t(calculVol && calculVol.fiabilite !== 'route_prevue' ? 'vol_frise_retard_gps' : 'vol_frise_retard', `${median < 0 ? '−' : '+'}${Math.abs(Math.round(median / 60000))}`)) : null,
     h('ol', { class: 'frise' }, ...lignes));
 }
 
@@ -3708,14 +4168,19 @@ function friseVol(c, enVol, maintenant) {
 function carteJalons(c) {
   const minutes = store.allumage();
   const jalons = Vol.jalons(c, store.inIsrael(), minutes);
-  if (!jalons.length) return null;
+  if (!jalons.length && !c.lignesDate.length) return null;
   const libelle = (f) => { try { return tr.t(`fete_${f}`); } catch { return null; } };
   return h('div', { class: 'carte carte-texte carte-vol' }, h('p', { class: 'indice' }, tr.t('vol_jalons_titre')),
+    // Ligne de date (audit du 16/11) : le choix de la ligne est discuté ; pendant le Omer, deux comptes.
+    c.lignesDate.length ? h('p', {}, tr.t('ligne_date_discutee')) : null,
+    Vol.ligneDateOmer(c, store.inIsrael()) ? h('p', { class: 'vol-jalon' }, tr.t('vol_omer_ligne_date')) : null,
     ...jalons.flatMap((j) => {
       const nom = [j.chabbat ? tr.t('vol_chabbat') : null, ...j.fetes.map(libelle)].filter(Boolean).join(' · ');
       const heure = deuxHeures(c.plan, j.instant);
       const texte = j.type === 'omer' ? tr.t('vol_jalon_omer', String(j.omer), heure) : tr.t(`vol_jalon_${j.type}`, nom, heure);
       return [h('p', { class: 'vol-jalon' }, texte),
+        // Vol polaire sans tsét : le repère de repli est dit (audit du 16/11).
+        j.repli ? h('p', {}, tr.t('vol_jalon_repli')) : null,
         j.allumage ? h('p', {}, tr.t('vol_jalon_allumage', String(minutes), deuxHeures(c.plan, j.allumage))) : null,
         h('p', { class: 'indice' }, positionVol(j))];
     }),
@@ -3759,6 +4224,15 @@ function ecranVol() {
     if (!plan) return message('vol_invalide_fuseau_inconnu');
     const faute = Vol.verifier(plan);
     if (faute) return message(`vol_invalide_${faute}`);
+    // Une durée que la distance ne permet pas : on avertit une fois, un second toucher passe outre (FVOL-12).
+    if (Vol.invraisemblable(plan)) {
+      const cle = [v.depart, v.arrivee, v.decollage, v.atterrissage].join('|');
+      if (avertiVol !== cle) {
+        avertiVol = cle;
+        const km = Math.round(Vol.distanceKm(plan.depart.latitude, plan.depart.longitude, plan.arrivee.latitude, plan.arrivee.longitude));
+        return feuille(tr.t('vol_title'), (f, fermer) => f.append(h('p', {}, tr.t('vol_invraisemblable', String(km), dureeEnMots(Math.round((+plan.atterrissage - +plan.decollage) / 60000)))), h('button', { class: 'principal', onclick: fermer }, tr.t('vol_fermer'))));
+      }
+    }
     // Le même vol, calculé à nouveau, garde son relevé GPS ; un autre vol l'efface (Store.setVol).
     const memeVol = garde && ['depart', 'arrivee', 'decollage', 'atterrissage'].every((k) => garde[k] === v[k]);
     const { releve, ...saisie } = v;
@@ -3770,7 +4244,7 @@ function ecranVol() {
     h('span', { class: 'corps' }, h('div', { class: 'etat' }, etiquette), h('div', { class: 'nom' }, valeur)), h('span', { class: 'chevron', 'aria-hidden': 'true' }));
   const heure = (cle, etiquette) => h('label', { class: 'ligne' },
     h('span', { class: 'corps' }, h('div', { class: 'etat' }, etiquette),
-      h('input', { type: 'datetime-local', class: 'champ-recherche champ-vol', value: v[cle] || null, onchange: (e) => { v[cle] = e.target.value; } })));
+      h('input', { type: 'datetime-local', class: 'champ-recherche champ-vol', value: v[cle] || null, onchange: (e) => { v[cle] = e.target.value; if (cle === 'atterrissage') v.arriveeEstimee = false; } })));
   const champNumero = h('input', { type: 'text', class: 'champ-recherche champ-vol', maxlength: 12, autocapitalize: 'characters', value: v.numero || null, onchange: (e) => { v.numero = e.target.value.trim(); } });
   // La loupe au bout du champ cherche la route du numéro (adsbdb) ; une ligne dit ce qui part.
   const loupe = h('button', { class: 'loupe-vol', type: 'button', disabled: routeVol.attente, 'aria-label': tr.t('vol_route_bouton'), title: tr.t('vol_route_bouton'),
@@ -3794,7 +4268,8 @@ function ecranVol() {
     h('div', { class: 'vol-resume-tete' }, h('span', { class: 'vol-resume-titre' }, libelleVol(garde)),
       h('button', { class: 'lien-bouton', onclick: () => { modifierVol = true; rendre(); } }, tr.t('vol_modifier'))),
     // Chaque heure isolée, la flèche dans le sens de lecture (← en hébreu).
-    h('p', { class: 'vol-resume-heures' }, `\u2068${heureAeroport(planGarde.depart, planGarde.decollage)}\u2069 ${tr.rtl ? '←' : '→'} \u2068${heureAeroport(planGarde.arrivee, planGarde.atterrissage)}\u2069`)) : null;
+    h('p', { class: 'vol-resume-heures' }, `\u2068${heureAeroport(planGarde.depart, planGarde.decollage)}\u2069 ${tr.rtl ? '←' : '→'} \u2068${heureAeroport(planGarde.arrivee, planGarde.atterrissage)}\u2069`),
+    garde.arriveeEstimee ? h('p', { class: 'indice' }, tr.t('vol_resume_estimee')) : null) : null;
   formulaireVolOuvert = !resume;
   const puce = h('span', { class: 'puce-bandeau' }, garde ? libelleVol(garde) : tr.t('vol_carte_sous'));
   return h('div', { class: 'ecran avec-bandeau' }, bandeau(tr.t('vol_title'), { puce, dessin: 'scene_airport' }),
@@ -3804,7 +4279,7 @@ function ecranVol() {
       ...(garde && calculVol ? resultatsVol(calculVol) : []),
       // La méthode, les aéroports, les routes : repliés sous « Sources ».
       h('details', { class: 'sources-vol' }, h('summary', {}, tr.t('vol_sources')),
-        ...piedZmanim().slice(0, 1),
+        h('p', { class: 'indice sources' }, tr.t('vol_methodes')),
         h('p', { class: 'indice sources' }, tr.t('vol_source_aeroports')),
         h('p', { class: 'indice sources' }, tr.t('vol_source_adsbdb'))))));
 }
@@ -3837,11 +4312,18 @@ function lignePaliers() {
   const tropheesNeufs = Trophees.nouveaux(gagnes, store.tropheesVus());
   const trophee = tropheesNeufs[0];
   const neuf = vus ? Paliers.nouveaux(etats, bilan, vus).sort((a, b) => b.rang - a.rang)[0] : null;
-  const message = trophee ? tr.t('trophee_niveau_gagne', tr.t(`trophee_${trophee.famille.cle}`), trophee.rang, tr.t(`metal_${trophee.metal}`))
-    : neuf ? tr.t('palier_nouveau', libellePalier(neuf.piste, bilan), valeurPalier(neuf.piste, neuf.atteint)) : null;
+  // Un trophée neuf ouvre sa fiche : seul le palier a un message (13/11, FDONNEES-06).
+  const message = neuf ? tr.t('palier_nouveau', libellePalier(neuf.piste, bilan), valeurPalier(neuf.piste, neuf.atteint)) : null;
   // Des étincelles du grade plutôt que des confettis multicolores (16/10, animation E).
   // Un trophée neuf ouvre sa fiche, avec la fête (19/10) ; un palier seul garde le message et les étincelles.
-  if (trophee) setTimeout(() => feterTrophees(tropheesNeufs), 600);
+  // Pas par-dessus un autre écran ni une feuille (FWEBCODE-13). Or la note qui suit le bravo est justement
+  // ouverte à ce moment-là : les trophées non montrés redeviennent neufs, fêtés au prochain accueil.
+  const vusAvant = store.tropheesVus();
+  if (trophee) setTimeout(() => {
+    if (app.dataset.ecran === 'accueil/aujourdhui' && !feuilleOuverte()) { feterTrophees(tropheesNeufs); return; }
+    const vusMaintenant = store.tropheesVus();
+    if (vusMaintenant && vusAvant) store.setTropheesVus(Trophees.remisANeuf(vusMaintenant, gagnes, vusAvant));
+  }, 600);
   else if (message) setTimeout(() => { signale(message); etincelles(app.querySelector('.ligne-grade .medaille-grade'), Trophees.grade(gagnes.size)); }, 600);
   store.setPaliersVus(Paliers.marques(etats, bilan));
   store.setTropheesVus(new Set(gagnes));
@@ -3857,7 +4339,7 @@ function lignePaliers() {
     medailleGrade(g, 26), h('span', {}, `${texte}  ›`));
 }
 
-const pratique = () => ({ minutes: store.minutesParJour(), notes: store.nombreNotes(), meilleureSerie: store.meilleureSerie(), tikkun: store.tikkunJournal() });
+const pratique = () => ({ minutes: store.minutesParJour(), notes: store.nombreNotes(), meilleureSerie: store.meilleureSerie(), tikkun: store.tikkunJournal(), exempt: (d) => store.isExempt(d) });
 
 /** Des confettis par-dessus l'écran, 2,8 s ; rien si l'on a demandé moins d'animations. */
 function confettis() {
@@ -3925,14 +4407,13 @@ const dessinTrophee = (e, m, taille) => objetTrophee(e.f.forme, m, e.f.icone, ta
 const descTrophee = (e) => tr.p(`trophee_${e.f.cle}_desc`, e.seuil);
 const nomMetal = (m) => tr.t(`metal_${m}`);
 const medailleGrade = (m, taille) => h('span', { class: 'medaille-grade', 'aria-hidden': 'true' }, objetTrophee('medaille', m, '★', taille));
-const moinsAnime = () => !!window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
 /** Le jour de gain de chaque trophée gagné (Trophees.datesGain) : l'historique rejoué. */
 function datesTrophees() {
-  return Trophees.datesGain(store.minutesParJour(), store.joursAvecNote(), (d) => store.isExempt(d), store.tikkunJournal());
+  return Trophees.datesGain(store.minutesParJour(), store.joursAvecNote(), store.exempteur(), store.tikkunJournal());
 }
 /** La date civile en toutes lettres, avec le jour (VueJour.dateCivile) : « mardi 29 septembre 2026 ». */
-const dateCivile = (iso) => new Intl.DateTimeFormat(tr.langue, { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' }).format(new Date(`${iso}T12:00:00Z`));
-const dateLongue = (iso) => new Intl.DateTimeFormat(tr.langue, { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' }).format(new Date(`${iso}T12:00:00Z`));
+const dateCivile = (iso) => new Intl.DateTimeFormat(tr.locale, { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' }).format(new Date(`${iso}T12:00:00Z`));
+const dateLongue = (iso) => new Intl.DateTimeFormat(tr.locale, { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' }).format(new Date(`${iso}T12:00:00Z`));
 
 /** Un texte en plusieurs paragraphes (VueJour.paragraphes, 19/10) : un bloc par paragraphe, un écart entre eux. */
 const paragraphes = (t) => String(t ?? '').split(/\n+/).map((x) => x.trim()).filter(Boolean).map((x) => h('span', { class: 'para' }, x));
@@ -3951,7 +4432,7 @@ function detailTrophee(e, p, dates, rangGlobal, apres = null) {
         ? h('p', { class: 'detail-date' }, dates[e.cle] ? tr.t('trophee_gagne_le', dateLongue(dates[e.cle])) : tr.t('trophee_gagne'))
         : h('div', {}, h('div', { class: 'trophee-barre grande', 'aria-hidden': 'true' }, h('span', { style: `width:${Math.round(Trophees.fraction(p, e) * 100)}%` })),
           h('p', { class: 'trophee-compte' }, tr.t('trophee_encore', v, e.seuil, e.seuil - v))),
-      gagne ? h('p', { class: 'indice' }, tr.t('trophee_detail_grade', nomMetal(m), rangGlobal)) : '',
+      gagne ? h('p', { class: 'indice' }, tr.p('trophee_detail_grade', rangGlobal, nomMetal(m), rangGlobal)) : '',
       h('div', { class: 'actions' }, h('button', { type: 'button', onclick: fermer }, tr.t('celebration_continue'))));
   }, apres);
 }
@@ -4005,10 +4486,10 @@ async function partagerGrade(g, n) {
   x.font = '700 76px system-ui, sans-serif';
   x.fillText(tr.t('grade_titre', nomMetal(g)), 540, 790);
   x.font = '400 46px system-ui, sans-serif';
-  x.fillText(tr.t('grade_sous_max', n), 540, 860);
+  x.fillText(tr.p('grade_sous_max', n), 540, 860);
   x.globalAlpha = 0.7; x.font = '600 38px system-ui, sans-serif';
   x.fillText('MyHitbodedut', 540, 990);
-  const texte = `${tr.t('grade_partage_texte', nomMetal(g), n)}\n${tr.t('partage_lien', LIEN_WEB)}`;
+  const texte = `${tr.p('grade_partage_texte', n, nomMetal(g), n)}\n${tr.t('partage_lien', LIEN_WEB)}`;
   const blob = await new Promise((r) => c.toBlob(r, 'image/png'));
   const fichier = blob ? new File([blob], 'grade.png', { type: 'image/png' }) : null;
   try {
@@ -4023,7 +4504,7 @@ async function partagerGrade(g, n) {
 
 /** Des étincelles de la couleur du grade autour d'un élément (16/10, animation E). */
 function etincelles(el, m) {
-  if (!el || moinsAnime()) return;
+  if (!el || sansMouvement()) return;
   const [clair, fonce] = TEINTES[m ?? 'or'];
   for (let k = 0; k < 10; k++) {
     const a = (k / 10) * 2 * Math.PI + Math.random() * 0.4;
@@ -4040,7 +4521,7 @@ function etincelles(el, m) {
 
 /** Un nombre qui monte de 0 à sa valeur (16/10, animation D). */
 function monteNombre(el, fin, texte) {
-  if (moinsAnime()) { el.textContent = texte(fin); return; }
+  if (sansMouvement()) { el.textContent = texte(fin); return; }
   const debut = performance.now();
   const pas = (t) => { const u = Math.min(1, (t - debut) / 700); el.textContent = texte(Math.round(fin * (1 - (1 - u) ** 3))); if (u < 1) requestAnimationFrame(pas); };
   el.textContent = texte(0);
@@ -4085,7 +4566,7 @@ function ecranPaliers() {
   const tete = h('div', { class: 'carte grade-tete' },
     h('div', { class: 'grade-ligne' }, medailleGrade(g, 48), h('div', { class: 'trophee-texte' },
       h('p', { class: 'grade-nom' }, tr.t('grade_titre', nomMetal(g))),
-      h('p', { class: 'grade-sous' }, suivant ? tr.t('grade_sous', n, suivant - n, nomMetal(Trophees.grade(suivant))) : tr.t('grade_sous_max', n)),
+      h('p', { class: 'grade-sous' }, suivant ? tr.p('grade_sous', n, n, suivant - n, nomMetal(Trophees.grade(suivant))) : tr.p('grade_sous_max', n)),
       suivant ? h('div', { class: `grade-barre ${g}`, 'aria-hidden': 'true' }, h('span', { 'data-largeur': `${Math.round(((n - de) / (suivant - de)) * 100)}%` })) : null)),
     proches.length ? h('div', { class: 'grade-proches' }, h('p', { class: 'grade-proches-titre' }, tr.t('trophees_proches_titre')),
       ...proches.map((e) => h('button', { type: 'button', class: 'proche', onclick: () => ouvrirDetail(e) },
@@ -4132,7 +4613,7 @@ function ecranPaliers() {
     const v = Trophees.valeur(p, e.f.cle);
     ligne.push(etape(e, null, v > 0 ? tr.t('trophee_progres', Math.min(v, e.seuil), e.seuil) : null, false));
   });
-  if (futurs.length > 15) ligne.push(h('p', { class: 'indice ligne-fin' }, tr.t('trophees_autres', futurs.length - 15)));
+  if (futurs.length > 15) ligne.push(h('p', { class: 'indice ligne-fin' }, tr.p('trophees_autres', futurs.length - 15)));
 
   // Un nouveau grade : la fête, une fois (pas la première ouverture, pas le bronze).
   const niveau = n === 0 ? 0 : Trophees.METAUX.indexOf(g) + 1;
@@ -4150,10 +4631,11 @@ function ecranPaliers() {
 
   requestAnimationFrame(() => {
     const d = ecran.querySelector('.defile');
-    if (d && ici) d.scrollTop = Math.max(0, ici.offsetTop - d.clientHeight / 3);
+    // Le défilement posé par l'écran n'est pas celui de la main : il ne cache pas la banderole (FWEBLIVE-03).
+    if (d && ici) { const cible = Math.max(0, ici.offsetTop - d.clientHeight / 3); if (Math.abs(cible - d.scrollTop) > 1) d.dataset.defilementAuto = '1'; d.scrollTop = cible; }
     // B : la ligne se remplit jusqu'à « Tu es ici », les dernières étapes une à une.
     const gagnes = [...ecran.querySelectorAll('.ligne-etape.gagne')];
-    if (!moinsAnime()) gagnes.forEach((el, i) => { el.style.setProperty('--retard', `${Math.max(0, i - (gagnes.length - 6)) * 90}ms`); el.classList.add('pousse'); });
+    if (!sansMouvement()) gagnes.forEach((el, i) => { el.style.setProperty('--retard', `${Math.max(0, i - (gagnes.length - 6)) * 90}ms`); el.classList.add('pousse'); });
     // D : les barres partent de zéro, le compte monte, le presque-atteint pulse.
     requestAnimationFrame(() => ecran.querySelectorAll('[data-largeur]').forEach((b) => { b.style.width = b.dataset.largeur; }));
     const cpt = ecran.querySelector('.ligne-ici .trophee-compte');
@@ -4171,7 +4653,7 @@ function feteGrade(ancien, g, n, suivant) {
     h('div', { class: 'grade-fete-carte' },
       h('div', { class: 'grade-morph' }, h('span', { class: 'rayons', 'aria-hidden': 'true' }),
         h('span', { class: 'morph-ancien' }, medailleGrade(ancien, 140)), h('span', { class: 'morph-nouveau' }, medailleGrade(g, 140))),
-      h('h2', {}, tr.t('grade_nouveau', nomMetal(g))), h('p', {}, tr.t('grade_sous_max', n)),
+      h('h2', {}, tr.t('grade_nouveau', nomMetal(g))), h('p', {}, tr.p('grade_sous_max', n)),
       suivant ? h('p', { class: 'indice' }, tr.t('grade_prochain', nomMetal(Trophees.grade(suivant)), suivant)) : null,
       h('button', { type: 'button', class: 'principal', onclick: () => voile.remove() }, tr.t('celebration_continue'))));
   setTimeout(() => etincelles(voile.querySelector('.grade-morph'), g), 1200);
@@ -4182,6 +4664,8 @@ function feteGrade(ancien, g, n, suivant) {
 function bilanDeLaSemaine() {
   // Pas par-dessus la présentation du premier lancement (revue du 16/10) : il attendra la prochaine ouverture.
   if (document.querySelector('.presentation')) return;
+  // Ni par-dessus un autre écran, une autre feuille ou une séance : le bilan attend la prochaine ouverture (FWEBCODE-13).
+  if (app.dataset.ecran !== 'accueil/aujourdhui' || feuilleOuverte() || store.isSessionRunning()) return;
   // Rien à calculer quand le bilan de cette semaine a déjà été montré.
   const debut = Trophees.debutSemaine(store.today());
   const semaineResumee = new Date(`${debut}T12:00:00Z`); semaineResumee.setUTCDate(semaineResumee.getUTCDate() - 7);
@@ -4207,7 +4691,7 @@ function ecranCalendrier() {
   const choisi = jourCalendrier ?? aujourdhui;
   const civil = store.calendrierCivil();
   const israel = store.inIsrael();
-  const moisCourt = new Intl.DateTimeFormat(tr.langue, { month: 'short', timeZone: 'UTC' });
+  const moisCourt = new Intl.DateTimeFormat(tr.locale, { month: 'short', timeZone: 'UTC' });
   const date = (iso) => new Date(`${iso}T12:00:00Z`);
   let grille;
   let titre;
@@ -4219,7 +4703,7 @@ function ecranCalendrier() {
     const jours = grille.flat().filter(Boolean);
     const premier = jourJuif(jours[0], israel);
     const dernier = jourJuif(jours.at(-1), israel);
-    titre = h('p', { class: 'mois-principal' }, new Intl.DateTimeFormat(tr.langue, { month: 'long', year: 'numeric', timeZone: 'UTC' }).format(new Date(Date.UTC(a, m - 1, 15))));
+    titre = h('p', { class: 'mois-principal' }, new Intl.DateTimeFormat(tr.locale, { month: 'long', year: 'numeric', timeZone: 'UTC' }).format(new Date(Date.UTC(a, m - 1, 15))));
     sousTitre = h('p', { class: 'mois-second mois-hebreu', lang: 'he', dir: 'rtl' },
       premier.moisEtAnnee === dernier.moisEtAnnee ? premier.moisEtAnnee : `${premier.moisEtAnnee} – ${dernier.moisEtAnnee}`);
     decale = (n) => { const d = new Date(Date.UTC(a, m - 1 + n, 1)); moisCalendrier = [d.getUTCFullYear(), d.getUTCMonth() + 1]; rendre(); };
@@ -4229,16 +4713,16 @@ function ecranCalendrier() {
     const jours = grille.flat().filter(Boolean);
     const [d0, d1] = [date(jours[0]), date(jours.at(-1))];
     const memeAnnee = d0.getUTCFullYear() === d1.getUTCFullYear();
-    const mois = (d, an) => new Intl.DateTimeFormat(tr.langue, { month: 'long', ...(an ? { year: 'numeric' } : {}), timeZone: 'UTC' }).format(d);
+    const mois = (d, an) => new Intl.DateTimeFormat(tr.locale, { month: 'long', ...(an ? { year: 'numeric' } : {}), timeZone: 'UTC' }).format(d);
     titre = h('p', { class: 'mois-principal mois-hebreu', lang: 'he', dir: 'rtl' }, jourJuif(debut, israel).moisEtAnnee);
     // Seule l'initiale de la plage prend la majuscule (« Septembre – octobre 2026 »).
     const plage = `${mois(d0, !memeAnnee)} – ${mois(d1, true)}`;
-    sousTitre = h('p', { class: 'mois-second' }, plage.charAt(0).toLocaleUpperCase(tr.langue) + plage.slice(1));
+    sousTitre = h('p', { class: 'mois-second' }, plage.charAt(0).toLocaleUpperCase(tr.locale) + plage.slice(1));
     decale = (n) => { moisHebreuCalendrier = moisHebreuVoisin(debut, n); rendre(); };
   }
   const bascule = (versCivil) => { store.setCalendrierCivil(versCivil); moisCalendrier = null; moisHebreuCalendrier = null; rendre(); };
   // Les initiales des jours, du dimanche (4/10/2026) au samedi.
-  const initiales = Array.from({ length: 7 }, (_, i) => new Intl.DateTimeFormat(tr.langue, { weekday: 'narrow', timeZone: 'UTC' })
+  const initiales = Array.from({ length: 7 }, (_, i) => new Intl.DateTimeFormat(tr.locale, { weekday: 'narrow', timeZone: 'UTC' })
     .format(new Date(Date.UTC(2026, 9, 4 + i, 12))));
   return h('div', { class: 'ecran' }, barre(tr.t('calendrier_title')),
     h('div', { class: 'defile' }, h('div', { class: 'contenu' },
@@ -4263,7 +4747,7 @@ function ecranCalendrier() {
             return h('button', {
               class: ['case', d === aujourdhui ? 'aujourdhui' : '', d === choisi ? 'choisi' : '', j.chome ? 'chome' : '', j.fetes.length ? 'fete' : ''].filter(Boolean).join(' '),
               'aria-pressed': String(d === choisi),
-              'aria-label': `${d} · ${j.dateHebraique}${j.fetes.length ? ` · ${j.fetes.map((f) => tr.t(`fete_${f}`)).join(', ')}` : ''}`,
+              'aria-label': `${new Intl.DateTimeFormat(tr.locale, { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' }).format(new Date(`${d}T12:00:00Z`))} · ${j.dateHebraique}${j.fetes.length ? ` · ${j.fetes.map((f) => tr.t(`fete_${f}`)).join(', ')}` : ''}`,
               onclick: () => { jourCalendrier = d; rendre(); },
             }, ...(civil ? [civ, hebreu] : [hebreu, civ]));
           })),
@@ -4282,6 +4766,7 @@ const ACCENTS = ['vert', 'bleu', 'violet', 'bordeaux', 'ambre', 'turquoise'];
 const OUVERTURES = [['aujourdhui', 'nav_today'], ['textes', 'nav_texts'], ['zmanim', 'nav_zmanim']];
 
 function ecranReglages() {
+  chargeVilles();
   const courante = LANGUES.find((l) => l.code === tr.langue);
   return h('div', { class: 'ecran' }, barre(tr.t('settings_title')),
     h('div', { class: 'defile' }, h('div', { class: 'contenu' },
@@ -4293,20 +4778,34 @@ function ecranReglages() {
               store.setLangueApp(LANGUES[i].code);
               tr = await chargeTraduction(LANGUES[i].code);
               appliqueApparence();
+              // Le mini-lecteur pose ses libellés une fois : reconstruit dans la nouvelle langue (FWEBCODE-15).
+              mini?.remove(); mini = null;
+              // Le nom d'une ville est gardé traduit au moment du choix : relu dans la nouvelle langue (FWEBCODE-15).
+              // La région n'est pas touchée (null) : elle a pu être corrigée à la main.
+              const lieu = store.lieu();
+              const ville = lieu?.ville != null ? villes?.find((v) => v.id === lieu.ville) : null;
+              if (ville) store.setLieu({ ...lieu, nom: titreTexte(ville.nom) }, ville, null);
               rendre();
             }),
         }),
         ligne({ nom: tr.t('reglage_lieu'), etat: store.lieu()?.nom ?? tr.t('reglage_lieu_aucun'), onclick: choisirLieu }),
-        // La région (02/11, SettingsActivity.region_button) : déduite du lieu, et corrigeable à la main.
+        // La région (02/11, SettingsActivity.region_button) : déduite du lieu, et corrigeable à la main ;
+        // choisie à la main, une reprise de la position ne la réécrit plus (FCALENDRIER-06).
         ligne({ nom: tr.t('settings_region'), etat: tr.t(store.inIsrael() ? 'region_israel' : 'region_diaspora'),
           onclick: () => choisirDans(tr.t('settings_region'), [tr.t('region_israel'), tr.t('region_diaspora')], store.inIsrael() ? 0 : 1,
-            (j) => { store.setInIsrael(j === 0); rendre(); }) }),
-        // À Jérusalem, l'usage des 40 minutes est proposé, jamais imposé.
+            (j) => { store.setInIsrael(j === 0, true); rendre(); }) }),
+        // À Jérusalem, l'usage du rite est proposé, jamais imposé : 40 min hors Edot, 20 min pour les Edot (audit du 16/11).
         ligne({ nom: tr.t('reglage_allumage'), onclick: choisirAllumage,
-          etat: [libelleAllumage(store.allumage()), mukafChoma() && store.allumage() !== 40 ? tr.t('reglage_allumage_proposition') : null].filter(Boolean).join(' · ') }),
+          etat: [libelleAllumage(store.allumage()), propositionAllumage(store.siddurNusah(), mukafChoma(), store.allumage()) ? tr.t(propositionAllumage(store.siddurNusah(), mukafChoma(), store.allumage())) : null].filter(Boolean).join(' · ') }),
         store.siddurNusah() === 'sefard' ? ligne({ nom: tr.t('reglage_tahanoun_tichri'), onclick: choisirTahanounTichri,
-          etat: tr.t(store.sansTahanounFinTichri() ? 'reglage_tahanoun_tichri_sans' : 'reglage_tahanoun_tichri_dit') }) : null),
+          etat: tr.t(store.sansTahanounFinTichri() ? 'reglage_tahanoun_tichri_sans' : 'reglage_tahanoun_tichri_dit') }) : null,
+        // « Pas de Ta'hanoun aujourd'hui » (audit du 16/11 ; Choul'han Aroukh O.H. 131:4) : deuil, brit, 'hatan ; ce jour seulement.
+        ligne({ nom: tr.t('reglage_sans_tahanoun_jour'),
+          etat: tr.t(store.sansTahanounLe(jourLieu()) ? 'reglage_sans_tahanoun_jour_oui' : 'reglage_sans_tahanoun_jour_non'),
+          onclick: () => { store.setSansTahanounLe(jourLieu(), !store.sansTahanounLe(jourLieu())); rendre(); } })),
       carteMaPratique(),
+      // Ni barrière ni rappels sur le site (FPRODUIT-06) : le dire, plutôt que de laisser chercher.
+      h('p', { class: 'indice' }, tr.t('reglages_android_seulement')),
       // Personnalisation (14/10) : les couleurs d'Android (palettes.css), la police, l'écran d'ouverture.
       h('div', { class: 'carte' },
         h('h3', {}, tr.t('section_appearance')),
@@ -4346,13 +4845,19 @@ function ecranReglages() {
             (j) => { store.setSourceHalakha(SOURCES_HALAKHA[j][0]); rendre(); }) })),
       carteDedicace(),
       carteMesDonnees(),
+      carteLicences(),
       h('div', { class: 'carte' }, ligne({ nom: tr.t('settings_onboarding'), onclick: presentation })),
       // Réinitialiser l'application (12/10) : en dernier, avec une confirmation.
       h('div', { class: 'carte carte-reinit' },
         h('h3', {}, tr.t('reset_title')),
-        h('p', { class: 'indice' }, tr.t('reset_hint')),
-        h('button', { class: 'bouton-danger', onclick: () => confirmer(tr.t('reset_confirm_title'), tr.t('reset_confirm_text'), tr.t('reset_confirm_yes'), () => {
+        h('p', { class: 'indice' }, tr.t('reset_hint_web')),
+        h('button', { class: 'bouton-danger', onclick: () => confirmer(tr.t('reset_confirm_title'), tr.t('reset_confirm_text_web'), tr.t('reset_confirm_yes'), async () => {
+          // Tout ce que le site garde (FWEBCODE-07) : les morceaux ajoutés (IndexedDB, vidés par une
+          // transaction : deleteDatabase serait bloquée par la connexion ouverte), le calibrage des livres.
           store.reinitialiser();
+          try { await MorceauxPerso.vide(); } catch { /* base indisponible : rien à effacer de plus */ }
+          clearTimeout(calibrageAEcrire);
+          try { localStorage.removeItem(CLE_CALIBRAGE); sessionStorage.clear(); } catch { /* stockage refusé */ }
           location.replace(location.pathname);
         }) }, tr.t('reset_action'))),
       ligneVersion())));
@@ -4417,7 +4922,7 @@ function carteMaPratique() {
     ligneInterrupteur(tr.t('settings_hide_countdown'), null, store.hideCountdown(), (v) => store.setHideCountdown(v)),
     // La hitbodedout guidée (02/11, SettingsActivity.guided_switch) : éteinte par défaut.
     ligneInterrupteur(tr.t('settings_hitbodedut'), tr.t('settings_hitbodedut_hint'), store.guidedHitbodedut(), (v) => store.setGuidedHitbodedut(v)),
-    ligneInterrupteur(tr.t('settings_shabbat'), tr.t('settings_shabbat_hint'), store.shabbatMode(), (v) => store.setShabbatMode(v)),
+    ligneInterrupteur(tr.t('settings_shabbat'), tr.t('settings_shabbat_hint_web'), store.shabbatMode(), (v) => store.setShabbatMode(v)),
     ligneInterrupteur(tr.t('settings_exempt_today'), tr.t('settings_exempt_today_hint'), store.pausedDates().has(jourAffiche), () => store.togglePausedDate(jourAffiche)));
 }
 
@@ -4464,6 +4969,17 @@ function dedicacer() {
   });
 }
 
+/** La borne du texte en clair d'une sauvegarde importée, comme SettingsActivity.CLAIR_MAX_OCTETS. */
+const CLAIR_MAX = 2 * 1024 * 1024;
+
+/** Sources et licences (audit du 12/11, TLIVRES-09, TPLAYDOCS-13) : le texte d'Android, sans ses bibliothèques. */
+function carteLicences() {
+  return h('div', { class: 'carte' },
+    h('details', { class: 'licences' },
+      h('summary', {}, tr.t('settings_licences')),
+      ...tr.t('licences_texte').split('\n').filter(Boolean).map((l) => h('p', { class: 'indice', dir: 'auto' }, l))));
+}
+
 /** Un champ de mot de passe de la sauvegarde (Coffre, audit du 12/11). */
 const champMotDePasse = (indice) => h('input', { type: 'password', autocomplete: 'off', maxlength: '128', placeholder: tr.t(indice), 'aria-label': tr.t(indice) });
 
@@ -4492,7 +5008,7 @@ function carteMesDonnees() {
     if (navigator.standalone && navigator.canShare) {
       const fichier = new File([contenu], nom, { type: 'application/json' });
       if (navigator.canShare({ files: [fichier] })) {
-        try { await navigator.share({ files: [fichier] }); signale(tr.t('export_ok')); } catch (e) { if (e?.name !== 'AbortError') signale(tr.t('export_failed')); }
+        try { await navigator.share({ files: [fichier] }); store.setDerniereSauvegarde(store.today()); signale(tr.t('export_ok')); } catch (e) { if (e?.name !== 'AbortError') signale(tr.t('export_failed')); }
         return;
       }
     }
@@ -4503,6 +5019,7 @@ function carteMesDonnees() {
       a.click();
       a.remove();
       setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+      store.setDerniereSauvegarde(store.today());
       signale(tr.t('export_ok'));
     } catch { signale(tr.t('export_failed')); }
   };
@@ -4510,15 +5027,24 @@ function carteMesDonnees() {
     const fichier = e.target.files?.[0];
     e.target.value = '';
     if (!fichier) return;
-    // Au plus 2 Mo, comme Android : une vraie sauvegarde pèse quelques dizaines de Ko.
-    if (fichier.size > 2 * 1024 * 1024) { signale(tr.t('import_failed')); return; }
+    // Comme Android (revue du 15/11) : le fichier jusqu'à 3 Mo, car une sauvegarde chiffrée passe en
+    // base64 et pèse un tiers de plus ; le texte en clair jusqu'à 2 Mo.
+    if (fichier.size > 3 * 1024 * 1024) { signale(tr.t('import_failed')); return; }
     let texte;
     try { texte = await fichier.text(); } catch { signale(tr.t('import_failed')); return; }
-    if (Coffre.estChiffre(texte)) demanderImport(texte); else importer(texte);
+    if (Coffre.estChiffre(texte)) demanderImport(texte);
+    else if (fichier.size > CLAIR_MAX) signale(tr.t('import_failed'));
+    else importer(texte);
   } });
   const importer = (texte) => {
     const n = store.importJson(texte);
     if (n === null || n === undefined) { signale(tr.t('import_invalid')); return; }
+    // Un fichier importé est une sauvegarde qui existe : le rappel d'export repart d'aujourd'hui (FWEBCODE-01).
+    store.setDerniereSauvegarde(store.today());
+    // Ce que la sauvegarde a déjà gagné n'est pas nouveau : pas de fiches de trophées en rafale (FWEBCODE-13).
+    const bilanImporte = bilanPaliers();
+    store.setPaliersVus(Paliers.marques(Paliers.etats(bilanImporte), bilanImporte));
+    store.setTropheesVus(new Set(Trophees.gagnes(pratique())));
     appliqueApparence();
     rendre();
     signale(tr.p('import_ok', n));
@@ -4527,20 +5053,30 @@ function carteMesDonnees() {
   const demanderImport = (chiffre) => feuille(tr.t('import_mdp_titre'), (f, fermer) => {
     const champ = champMotDePasse('export_mdp_champ');
     const erreur = h('p', { class: 'indice', role: 'alert' });
+    // Un seul calcul à la fois, et rien n'est importé si la feuille a été fermée pendant ce temps
+    // (revue du 15/11) : « Retour » ou Échap pendant la dérivation n'importait pas moins.
     const valider = async () => {
+      if (bouton.disabled) return;
+      bouton.disabled = true;
       const clair = await Coffre.dechiffrer(chiffre, champ.value);
+      if (!f.isConnected) return;
+      bouton.disabled = false;
       if (clair === null) { erreur.textContent = tr.t('import_mdp_faux'); champ.select(); return; }
+      if (new TextEncoder().encode(clair).length > CLAIR_MAX) { fermer(); signale(tr.t('import_failed')); return; }
       fermer();
       importer(clair);
     };
+    const bouton = h('button', { type: 'button', class: 'fort', onclick: valider }, tr.t('action_import'));
     f.append(champ, erreur,
       h('div', { class: 'actions' },
         h('button', { type: 'button', onclick: fermer }, tr.t('action_back')),
-        h('button', { type: 'button', class: 'fort', onclick: valider }, tr.t('action_import'))));
+        bouton));
   });
-  return h('div', { class: 'carte' },
+  return h('div', { class: 'carte carte-donnees' },
     h('h3', {}, tr.t('section_data')),
     h('p', { class: 'indice' }, tr.t('section_data_hint_web')),
+    // Le navigateur n'a pas promis de garder (persist() refusé) : on le dit (FWEBCODE-01).
+    stockageDurable === false ? h('p', { class: 'indice' }, tr.t('stockage_fragile_web')) : null,
     h('div', { class: 'actions-donnees' },
       h('button', { type: 'button', class: 'secondaire', onclick: demanderExport }, tr.t('action_export')),
       h('button', { type: 'button', class: 'secondaire', onclick: () => champ.click() }, tr.t('action_import'))),
@@ -4562,7 +5098,10 @@ const PRESENTATION = [
   { cle: 'textes', titre: 'onboarding_texts', corps: 'onboarding_texts_body', image: 'char_tehilim' },
   { cle: 'reglages', titre: 'onboarding_yours', corps: 'onboarding_yours_body', image: 'char_pointing' },
   { cle: 'adresse', titre: 'onboarding_adresse', corps: 'onboarding_adresse_body', image: 'char_dancing', adresse: true },
-  { cle: 'prive', titre: 'onboarding_private', corps: 'onboarding_private_body_web', image: 'char_thumbs_up' },
+  // La promesse dit ce qui part vraiment (audit du 12/11, FPRODUIT-08) : sans relais, le seul numéro de vol
+  // vers adsbdb ; avec RELAIS_VOL (build.mjs), le suivi en direct en plus. Sur iPhone hors de l'écran
+  // d'accueil, « reste dans ce navigateur » ne vaut que sept jours : l'écran le dit (FWEBCODE-01).
+  { cle: 'prive', titre: 'onboarding_private', corps: RELAIS_VOL ? 'onboarding_private_body_web_relais' : 'onboarding_private_body_web', image: 'char_thumbs_up', installer: true },
 ];
 const DUREES_PRESENTATION = [5, 10, 15, 30];
 
@@ -4586,6 +5125,7 @@ function presentation() {
       h('div', { class: 'presentation-scene' }, h('img', { src: `img/${e.image}.webp`, alt: '' })),
       h('h1', { class: 'presentation-titre' }, tr.t(e.titre)),
       h('p', { class: 'presentation-corps' }, tr.t(e.corps)),
+      e.installer && aInstaller() ? h('p', { class: 'presentation-corps presentation-avis' }, tr.t('installer_ios_web')) : null,
       e.duree ? puces(DUREES_PRESENTATION, store.targetMinutes(), (m) => tr.duree(m), (m) => store.setTargetMinutes(m)) : null,
       e.adresse ? puces(['m', 'f'], store.adresse(), (a) => tr.t(a === 'm' ? 'adresse_tsadik' : 'adresse_tsadeket'), (a) => { store.setAdresse(a); appliqueApparence(); }) : null,
       h('button', { class: 'principal', onclick: () => { if (dernier) fermer(); else { i++; dessiner(); } } },
@@ -4618,7 +5158,11 @@ function declarerHorsTelephone() {
   const hier = ajouteJours(aujourdhui, -1);
   const inscrire = (date) => choisirDuree((m) => {
     store.addSession(m, { date });
-    if (date === aujourdhui) store.setPendingCelebration(m);
+    if (date === aujourdhui) {
+      store.setPendingCelebration(m);
+      // La note de ce jour-là s'écrit dans le carnet du bravo, comme sur Android (MainActivity.declarerHorsTelephone).
+      dateNote = date;
+    }
     rendre();
   }, tr.t('offline_how_long'));
   const ouvertAujourdhui = !store.isDone(aujourdhui);
@@ -4631,7 +5175,7 @@ function ajoutTemps(iso, montrer = null) {
   if (iso > store.today()) return;
   const r = store.record(iso);
   const minutes = r?.faite ? r.minutes : null;
-  const titre = new Intl.DateTimeFormat(tr.langue, { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' }).format(new Date(`${iso}T12:00:00Z`));
+  const titre = new Intl.DateTimeFormat(tr.locale, { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' }).format(new Date(`${iso}T12:00:00Z`));
   feuille(titre, (f, fermer) => {
     f.append(h('p', { class: 'message' }, minutes === null ? tr.t('jour_rien') : tr.t('jour_fait', tr.duree(minutes))),
       h('div', { class: 'actions' },
@@ -4675,7 +5219,10 @@ function confirmer(titre, message, action, onConfirme) {
  * enrichi (NoteDialog.kt, porté le 02/11) : l'humeur avant et après, une gratitude, une chose à travailler.
  */
 function ecrireNote(date, apres = () => {}) {
+  // Tous les moyens de fermer la feuille (boutons, Échap, toucher à côté) rappellent [apres] :
+  // un bravo qui attendait sa fermeture s'ouvre alors (rendre).
   feuille(tr.t('note_title'), (f, fermer) => {
+    f.classList.add('feuille-note');
     const champ = h('textarea', { rows: 4, placeholder: tr.t('note_hint'), 'aria-label': tr.t('note_title') });
     champ.value = store.record(date)?.note ?? '';
     const plus = store.journalPlus(date);
@@ -4701,13 +5248,16 @@ function ecrireNote(date, apres = () => {}) {
     f.append(h('img', { class: 'note-art', src: `img/${joie()}.webp`, alt: '' }), champ,
       humeurs('journal_humeur_avant', 'avant'), humeurs('journal_humeur_apres', 'apres'), gratitude, travail,
       h('div', { class: 'actions' },
-        h('button', { onclick: () => { fermer(); apres(); } }, tr.t('action_later')),
+        h('button', { onclick: fermer }, tr.t('action_later')),
         h('button', { onclick: () => {
           store.setJournalPlus(date, { avant: plus.avant, apres: plus.apres, gratitude: gratitude.value.trim(), travail: travail.value.trim() });
           store.setNote(date, champ.value.trim());
-          fermer(); apres();
+          // Un carnet du bravo pris sous la feuille et pas touché relit ce qui vient d'être enregistré :
+          // sinon il réécrirait par-dessus ce qu'il avait copié avant.
+          if (carnetBravo && !carnetChange(carnetBravo)) carnetBravo = null;
+          fermer();
         } }, tr.t('action_save'))));
-  });
+  }, apres);
 }
 
 // --- La carte de ’hizouk (view_chizuk.xml) -------------------------------------------
@@ -4756,12 +5306,21 @@ function ajusteLesTextes() {
   }
 }
 
+// La police hébraïque arrive après le premier rendu : l'ajustement est refait à son chargement
+// et à la rotation, sinon le texte est mesuré avec la police de secours (FWEBLIVE-04).
+document.fonts?.ready?.then(ajusteLesTextes);
+document.fonts?.addEventListener?.('loadingdone', ajusteLesTextes);
+window.addEventListener('resize', ajusteLesTextes);
+
 // --- La séance (SessionActivity, SessionService) ----------------------------------------
 let tic = null;
 let etaitEnCours = false;
 let verrouEcran = null;
-/** Après « Terminer maintenant », la note est proposée au retour du bravo. */
-let noteApresBravo = false;
+/**
+ * Vrai quand le bravo a attendu que la feuille de note se ferme (mode « Écrire ») : il s'ouvre
+ * alors sans carnet, la note vient d'être proposée (CelebrationActivity sansNote, FSEANCE-03).
+ */
+let bravoApresNote = false;
 /** { minutes } après une séance close, { annulee: true } après un abandon. */
 let bravo = null;
 
@@ -4775,6 +5334,8 @@ function relacheEcran() {
 }
 
 function demarreMusique() {
+  // Un aperçu d'ambiance en cours ne doit pas couper celle de la séance après 5 s (FWEBCODE-14).
+  clearTimeout(apercuAmbiance);
   // L'ambiance (19/10) suit son réglage, que la musique soit là ou non.
   joueAmbiance(store.ambiance(), store.musicVolume());
   if (!store.musicEnabled()) return;
@@ -4970,6 +5531,7 @@ function commencer(minutes) {
 let dateNote = null;
 
 function cloreSeance({ avantTerme }) {
+  fermeLesFeuilles();
   const sujet = store.sessionTheme();
   const { minutes, date } = store.endSession({ avantTerme });
   const inscrite = minutes > 0 || !avantTerme;
@@ -4979,6 +5541,7 @@ function cloreSeance({ avantTerme }) {
   if (inscrite) {
     store.addSession(minutes, { theme: sujet, date });
     store.setPendingCelebration(minutes);
+    // Comme sur Android : après toute séance inscrite, la note de ce jour s'écrit dans le carnet du bravo.
     dateNote = date;
   }
   etaitEnCours = false;
@@ -4991,12 +5554,14 @@ function cloreSeance({ avantTerme }) {
 
 /** « Terminer maintenant » : la note est proposée après le bravo, ou tout de suite s'il n'y en a pas. */
 function terminerMaintenant() {
-  if (cloreSeance({ avantTerme: true })) noteApresBravo = true;
-  else setTimeout(() => ecrireNote(dateNote ?? store.today(), rendre), 50);
+  // Séance déjà inscrite (terme atteint pendant que la feuille était ouverte) : rien à terminer (FWEBCODE-10).
+  if (store.sessionStartedAt() === 0) { rendre(); return; }
+  if (!cloreSeance({ avantTerme: true })) setTimeout(() => ecrireNote(dateNote ?? store.today(), rendre), 50);
   rendre();
 }
 
 function annulerSeance() {
+  if (store.sessionStartedAt() === 0) { rendre(); return; }
   store.endSession({ avantTerme: true });
   etaitEnCours = false;
   arreteMusique();
@@ -5012,7 +5577,7 @@ const deuxChiffres = (n) => String(n).padStart(2, '0');
 function compteur() {
   const mode = store.sessionCounter();
   const t = Date.now();
-  if (mode === 'masque') return { texte: '', legende: tr.t('session_hidden_caption') };
+  if (mode === 'masque') return { texte: '', legende: tr.t('session_hidden_caption_web') };
   const ms = mode === 'ecoule'
     ? Math.max(0, t - store.sessionStartedAt())
     : Math.max(0, store.sessionEndsAt() - t);
@@ -5077,7 +5642,8 @@ addEventListener('click', (ev) => {
 function demarreTic() {
   if (tic) return;
   tic = setInterval(() => {
-    if (etaitEnCours && !store.isSessionRunning()) {
+    // Sans le drapeau en mémoire : une page rechargée pendant la séance la clôt aussi à son terme (FWEBCODE-11).
+    if (store.isSessionOver()) {
       cloreSeance({ avantTerme: false });
       rendre();
       return;
@@ -5196,7 +5762,7 @@ function ecranSeance() {
     // La hitbodedout guidée (02/11) : sous le ’hizouk, avant « je n'arrive pas à parler », comme Android.
     enCours ? carteGuide() : null,
     enCours && aBlocage ? h('button', { class: 'texte-clair blocage', onclick: () => { tireChizuk('blocage'); if (questionSeance < 0) questionSeance = 0; rendre(); } }, tr.t('chizuk_stuck')) : null,
-    enCours && questionSeance >= 0 ? h('div', { class: `question-seance${questionChange && !moinsDeMouvement() ? ' fondu-neuf' : ''}` },
+    enCours && questionSeance >= 0 ? h('div', { class: `question-seance${questionChange && !sansMouvement() ? ' fondu-neuf' : ''}` },
       h('p', { class: 'question-rang' }, tr.t('question_rang', questionSeance + 1, QUESTIONS_BLOCAGE.length)),
       h('div', { class: 'question-jauge', 'aria-hidden': 'true' }, h('span', { style: `width:${((questionSeance + 1) / QUESTIONS_BLOCAGE.length) * 100}%` })),
       h('p', { class: 'question-texte' }, tr.t(QUESTIONS_BLOCAGE[questionSeance])),
@@ -5208,11 +5774,12 @@ function ecranSeance() {
   if (enCours) {
     corps.push(
       h('button', {
-        class: 'principal', onclick: () => confirmer(tr.t('session_finish_title'), tr.t('session_finish_message'),
+        class: 'principal', onclick: () => confirmer(tr.t('session_finish_title'),
+          tr.t(SessionRule.minutesEcoulees(store.sessionStartedAt(), Date.now()) < 1 ? 'session_finish_short' : 'session_finish_message'),
           tr.t('session_finish_now'), terminerMaintenant),
       }, tr.t('session_finish_now')),
       h('button', {
-        class: 'texte-clair', onclick: () => confirmer(tr.t('session_cancel_title'), tr.t('session_cancel_message'),
+        class: 'texte-clair', onclick: () => confirmer(tr.t('session_cancel_title'), tr.t(fait ? 'session_cancel_message_done' : 'session_cancel_message'),
           tr.t('session_cancel'), annulerSeance),
       }, tr.t('session_cancel')));
   } else {
@@ -5245,6 +5812,31 @@ function ecranSeance() {
 // --- Le bravo (CelebrationActivity) -------------------------------------------------
 let danseEnCours = null;
 
+/**
+ * La page du carnet sous le bravo (13/11, CelebrationActivity.carnet) : l'humeur d'une touche,
+ * puis la gratitude, la chose à travailler et la note, qui s'ouvraient dans une feuille à part
+ * après « Continuer ». Gardée ici d'un rendu à l'autre : rien de ce qu'on écrit ne se perd.
+ */
+let carnetBravo = null;
+function ouvrirCarnet() {
+  if (carnetBravo) return carnetBravo;
+  const date = dateNote ?? store.today();
+  const plus = store.journalPlus(date);
+  const note = store.record(date)?.note ?? '';
+  carnetBravo = { date, avant: plus.avant, apres: plus.apres, gratitude: plus.gratitude, travail: plus.travail, note,
+    initial: JSON.stringify([plus.apres, plus.gratitude.trim(), plus.travail.trim(), note.trim()]), ouvert: false };
+  return carnetBravo;
+}
+const carnetChange = (c) => JSON.stringify([c.apres, c.gratitude.trim(), c.travail.trim(), c.note.trim()]) !== c.initial;
+/** N'écrit que ce qui a changé ; appelé par « Enregistrer » comme par le retour du navigateur. */
+function enregistrerCarnet() {
+  const c = carnetBravo;
+  carnetBravo = null;
+  if (!c || !carnetChange(c)) return;
+  store.setJournalPlus(c.date, { avant: c.avant, apres: c.apres, gratitude: c.gratitude.trim(), travail: c.travail.trim() });
+  store.setNote(c.date, c.note.trim());
+}
+
 function ecranBravo() {
   const annulee = !!bravo.annulee;
   const adresse = store.adresse();
@@ -5253,18 +5845,40 @@ function ecranBravo() {
     : tr.t(adresse === 'm' ? 'celebration_tsadik' : adresse === 'f' ? 'celebration_tsadeket' : 'celebration_neutral');
   const sousTitre = annulee ? tr.t('annulation_subtitle')
     : bravo.minutes > 0 ? tr.p('celebration_minutes', bravo.minutes) : null;
+  const c = annulee || bravo.sansCarnet ? null : ouvrirCarnet();
   const continuer = () => {
+    enregistrerCarnet();
     bravo = null;
     chizukBravo = null;
+    // La note se tape dans le carnet du bravo (refonte du 13/11) : plus de feuille de note à rouvrir
+    // après le retour, donc rien à attendre de lui (FWEBCODE-10 ne s'applique plus ici).
     retour();
-    if (noteApresBravo) {
-      noteApresBravo = false;
-      setTimeout(() => ecrireNote(dateNote ?? store.today(), rendre), 50);
-    }
   };
+  const principal = h('button', { class: 'principal', onclick: continuer }, tr.t(c && carnetChange(c) ? 'action_save' : 'celebration_continue'));
+  const majBouton = () => { principal.textContent = tr.t(carnetChange(c) ? 'action_save' : 'celebration_continue'); };
+  const champ = (cle, titreCle, indice, long = false) => {
+    const e = h(long ? 'textarea' : 'input', { id: `carnet-${cle}`, class: 'carnet-champ', placeholder: tr.t(indice),
+      ...(long ? { rows: 3 } : { type: 'text', maxlength: JournalPlus.GRATITUDE_MAX }) });
+    e.value = c[cle];
+    e.addEventListener('input', () => { c[cle] = e.value; majBouton(); });
+    return [h('label', { class: 'carnet-libelle', for: `carnet-${cle}` }, tr.t(titreCle)), e];
+  };
+  const carnet = !c ? null : h('section', { class: 'carnet' },
+    h('h2', { class: 'carnet-question' }, tr.t('celebration_humeur')),
+    h('div', { class: 'humeurs-rang carnet-humeurs', role: 'group', 'aria-label': tr.t('celebration_humeur') },
+      JournalPlus.HUMEURS.map((e, i) => h('button', {
+        type: 'button', class: 'humeur', 'aria-label': `${i + 1}/5`, 'aria-pressed': String(c.apres === i + 1),
+        // Retoucher l'humeur choisie la retire ; une humeur ouvre la suite du carnet.
+        onclick: () => { c.apres = c.apres === i + 1 ? 0 : i + 1; c.ouvert = true; rendre(); },
+      }, e))),
+    c.ouvert ? [...champ('gratitude', 'journal_gratitude', 'journal_gratitude_hint'),
+      ...champ('travail', 'journal_travail', 'journal_travail_hint'),
+      ...champ('note', 'note_title', 'note_hint', true),
+      h('p', { class: 'carnet-prive' }, tr.t('celebration_prive'))]
+      : h('button', { class: 'texte-bouton', onclick: () => { c.ouvert = true; rendre(); setTimeout(() => app.querySelector('#carnet-note')?.focus(), 0); } }, tr.t('action_write_note')));
   // Un jour la danse, le lendemain la guitare, le surlendemain le pouce levé (12-13/10).
   const seul = [null, 'char_guitar', 'char_thumbs_up'][Math.floor(Date.now() / 86400000) % 3];
-  return h('div', { class: 'ecran bravo' },
+  return h('div', { class: `ecran bravo${c?.ouvert ? ' carnet-ouvert' : ''}` },
     h('div', { class: 'defile' }, h('div', { class: 'contenu' },
       h('div', { class: 'scene danse' },
         h('div', { class: 'danseur' },
@@ -5274,12 +5888,13 @@ function ecranBravo() {
       h('h1', { class: 'bravo-titre' }, titre),
       sousTitre ? h('p', { class: 'bravo-sous-titre' }, sousTitre) : null,
       annulee && chizukBravo ? carteChizuk({ moment: 'relance', item: chizukBravo }, { compacte: true }) : null,
-      h('button', { class: 'principal', onclick: continuer }, tr.t('celebration_continue')),
+      carnet,
+      principal,
       // Partager la séance faite (12/10), avec le lien de la version web.
-      !annulee && bravo.minutes > 0 ? h('button', { class: 'lien-bouton bravo-partage', onclick: () => partagerSeance(bravo.minutes) }, tr.t('partage_action')) : null)));
+      !annulee && bravo.minutes > 0 && !c?.ouvert ? h('button', { class: 'lien-bouton bravo-partage', onclick: () => partagerSeance(bravo.minutes) }, tr.t('partage_action')) : null)));
 }
 
-const LIEN_WEB = 'https://myhitbo.github.io/myhitbodedut-web/';
+const LIEN_WEB = 'https://myhitbodedut.pages.dev/';
 /** Le texte d'une séance faite et le lien de la version web : le partage du téléphone, sinon le presse-papiers. */
 async function partagerSeance(minutes) {
   const serie = store.streak?.() ?? 0;
@@ -5362,7 +5977,10 @@ function retour() {
   if (history.state?.interne) history.back();
   else { history.replaceState(null, '', location.pathname); rendre(); }
 }
+/** Ferme les feuilles ouvertes : elles sont posées sur le corps de la page, l'historique ne les connaît pas (FWEBCODE-10). */
+const fermeLesFeuilles = () => document.querySelectorAll('.voile').forEach((v) => v.remove());
 window.addEventListener('popstate', () => {
+  fermeLesFeuilles();
   // Le retour d'un renvoi (« Hallel › ») rouvre la prière d'où l'on venait.
   if (history.state?.priere) priere = history.state.priere;
   rendre();
@@ -5397,8 +6015,14 @@ function rendre() {
   // Le bravo d'une séance close attend le prochain écran ouvert.
   if (['accueil', 'seance'].includes(ecranCourant())) {
     const minutes = store.takePendingCelebration();
-    if (minutes !== null) {
-      bravo = { minutes };
+    if (minutes !== null && document.querySelector('.feuille-note')) {
+      // La feuille de note est ouverte (mode « Écrire ») : le bravo attend qu'elle se ferme,
+      // puis s'ouvre sans carnet, comme sur Android (NoteDialog.ouverte, FSEANCE-03).
+      store.setPendingCelebration(minutes);
+      bravoApresNote = true;
+    } else if (minutes !== null) {
+      bravo = { minutes, sansCarnet: bravoApresNote };
+      bravoApresNote = false;
       history.pushState({ interne: true }, '', '#bravo');
     }
   }
@@ -5406,10 +6030,12 @@ function rendre() {
   // La position de défilement survit à un nouveau rendu du même écran.
   const avant = app.querySelector('.defile')?.scrollTop ?? 0;
   const ecran = ecranCourant();
+  // Le défilement automatique ne suit pas l'utilisateur sur un autre écran (16/11).
+  if (defilAuto && defilAuto.ecran !== ecran) arreteDefilement(false);
   // L'horloge tourne tant qu'une hitbodedout est en cours, quel que soit l'écran : sinon sa fin
   // n'était vue qu'au toucher suivant (audit du 16/10).
   if (ecran !== 'seance' && !store.isSessionRunning()) arreteTic();
-  if (ecran !== 'bravo') arreteDanse();
+  if (ecran !== 'bravo') { arreteDanse(); enregistrerCarnet(); }
   if (ecran !== 'boussole') arreteBoussole();
   queueMicrotask(majMini);
   const memeEcran = app.dataset.ecran === `${ecran}/${onglet}` && !app.querySelector('.ecran[data-attente]');
@@ -5422,6 +6048,8 @@ function rendre() {
   const champ = document.activeElement?.classList?.contains('champ-recherche') ? document.activeElement : null;
   const selection = champ ? [champ.selectionStart, champ.selectionEnd] : null;
   app.replaceChildren();
+  // Le stockage refusé (FWEBCODE-01) : un bandeau permanent, au-dessus de chaque écran.
+  if (sansStockage) app.append(h('p', { class: 'bandeau-stockage', role: 'note' }, tr.t('stockage_memoire_web')));
   if (ecran === 'musique') app.append(ecranMusique());
   else if (ecran === 'reglages') app.append(ecranReglages());
   else if (ecran === 'zmanim') app.append(ecranZmanim());
@@ -5448,11 +6076,14 @@ function rendre() {
   else if (ecran === 'livres') app.append(ecranLivres());
   else if (ecran === 'source') app.append(ecranSource());
   else {
-    app.append(h('div', { class: 'ecran avec-onglets' },
-      h('div', { class: 'defile' }, onglet === 'textes' ? panneauTextes() : panneauAujourdhui()),
+    app.append(h('div', { class: 'ecran avec-onglets', 'data-ciel': onglet === 'aujourdhui' ? cielMaintenant() : null },
+      h('div', { class: 'corps-onglets' },
+        h('div', { class: 'defile' }, onglet === 'textes' ? panneauTextes() : onglet === 'chemin' ? panneauChemin() : panneauAujourdhui()),
+        barreDepart()),
       onglets()));
   }
   app.dataset.ecran = `${ecran}/${onglet}`;
+  if (defilAuto && !defileLu()) arreteDefilement(false);
   if (memeEcran && hautLivre && app.querySelector('.defile.defile-livre')) {
     const ecranLivre = app.querySelector('.ecran');
     app.querySelector('.defile').scrollTop = avant;
@@ -5504,8 +6135,17 @@ async function demarrer() {
   if (ecranCourant() === 'seance') tireChizuk('ouverture');
   if (store.ouverture() === 'zmanim' && ecranCourant() === 'accueil') history.pushState({ interne: true }, '', '#zmanim');
   rendre();
+  // Une page rechargée pendant la séance : l'écran reste allumé, comme au lancement (FWEBCODE-11).
+  if (store.isSessionRunning()) gardeEcranAllume();
   // Le premier lancement, ou une présentation qui a changé depuis (Onboarding.VERSION).
   if (store.onboardedVersion() < PRESENTATION_VERSION) presentation();
+  // Le Jour resté ouvert passe de l'aube au jour, du coucher à la nuit (14/11), sans attendre
+  // un retour sur l'application ; pas sous une feuille ouverte.
+  setInterval(() => {
+    const jour = app.querySelector('.ecran[data-ciel]');
+    if (!jour || document.hidden || document.querySelector('.voile')) return;
+    if (jour.dataset.ciel !== cielMaintenant()) rendre();
+  }, 60000);
   // Revenir à l'application redessine l'écran : un autre jour, une séance
   // arrivée à son terme, le décompte qui a continué pendant le sommeil.
   let cacheA = 0;
@@ -5543,7 +6183,30 @@ if ('serviceWorker' in navigator) {
     if (document.hidden && nouvelleVersion && !store.isSessionRunning()) location.reload();
   });
 }
-demarrer();
+/**
+ * Un fichier du démarrage qui échoue (réseau instable avant la fin de l'installation hors connexion) :
+ * un message et « Réessayer » plutôt qu'un écran vide (FWEBCODE-06). Écrit en dur dans les langues du site :
+ * tr n'existe peut-être pas, le fichier de chaînes étant parfois celui qui a échoué.
+ */
+function echecDemarrage() {
+  // La langue que l'interface aurait prise (le réglage, sinon le téléphone ; l'arabe, seulement de Tunisie).
+  let langue = 'en';
+  try { langue = langueInitiale(store.langueApp(), navigator.languages); } catch { /* le stockage peut manquer */ }
+  const textes = {
+    fr: ['Le chargement a échoué. Vérifiez la connexion, puis réessayez.', 'Réessayer'],
+    en: ['Loading failed. Check your connection, then try again.', 'Try again'],
+    he: ['הטעינה נכשלה. בדקו את החיבור ונסו שוב.', 'לנסות שוב'],
+    es: ['No se pudo cargar. Revisa la conexión y vuelve a intentarlo.', 'Reintentar'],
+    ar: ['التحميل ما نجحش. ثبّت في الاتصال، ومن بعد عاود جرّب.', 'عاود جرّب'],
+  };
+  const [message, bouton] = textes[langue] ?? textes.en;
+  document.getElementById('ouverture')?.remove();
+  const e = h('div', { class: 'ecran', role: 'alert', style: 'padding:32px 16px;text-align:center', dir: langue === 'he' || langue === 'ar' ? 'rtl' : 'ltr' },
+    h('p', {}, message),
+    h('button', { class: 'principal', onclick: () => location.reload() }, bouton));
+  app.replaceChildren(e);
+}
+demarrer().catch(echecDemarrage);
 
 // L'écran d'ouverture (15/10) : le 'hassid devant le tziyoun une seconde et demie, puis un fondu ;
 // une seule fois par session (un rechargement ne le rejoue pas).
@@ -5565,6 +6228,11 @@ document.addEventListener('scroll', (e) => {
   const ecran = d.closest('.avec-bandeau');
   const bandeau = ecran?.querySelector('.bandeau');
   if (!bandeau) return;
+  if (d.dataset.defilementAuto) { delete d.dataset.defilementAuto; return; }
   if (d.scrollTop > 8 && d.scrollHeight - d.clientHeight > bandeau.offsetHeight) ecran.classList.add('bandeau-cache');
   else if (d.scrollTop <= 0) ecran.classList.remove('bandeau-cache');
 }, true);
+// Dès que la main prend le défilement, celui de l'écran ne compte plus (FWEBLIVE-03).
+for (const evt of ['touchstart', 'wheel']) {
+  document.addEventListener(evt, (e) => { const d = e.target instanceof Element ? e.target.closest('.defile') : null; if (d) delete d.dataset.defilementAuto; }, { capture: true, passive: true });
+}

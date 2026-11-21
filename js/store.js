@@ -8,9 +8,11 @@
 // Le stockage est passé en paramètre : les tests donnent le leur.
 
 import { ajouteJours, estJourChome, isoLocal, israelParDefaut, jourSemaine } from './calendrier.js';
+import { decisionRegion, dansIsrael } from './calendrier-juif.js';
 import { SessionRule } from './seance.js';
-import { Anneaux, JaugeSemaine, Plaque } from './regles.js';
+import { Anneaux, HistoriqueReglage, JaugeSemaine, Plaque } from './regles.js';
 import { JournalPlus } from './regles.js';
+import { NIVEAU_DEFAUT, borneNiveau } from './defilement.js';
 
 export const DEFAULT_START = 6 * 60;
 export const DEFAULT_END = 11 * 60;
@@ -58,12 +60,14 @@ export function memoire() {
   };
 }
 
-export function creeStore(stockage, { maintenant = () => new Date(), fuseau } = {}) {
+export function creeStore(stockage, { maintenant = () => new Date(), fuseau, surEchec = null } = {}) {
   const lit = (nom) => {
     try { return JSON.parse(stockage.getItem(nom) || '{}') || {}; } catch { return {}; }
   };
   const ecrit = (nom, valeur) => {
-    try { stockage.setItem(nom, JSON.stringify(valeur)); } catch { /* quota : rien à faire de mieux */ }
+    // Une écriture refusée (quota, stockage retiré) ne reste pas muette (13/11, FWEBCODE-01) :
+    // [surEchec] le dit à l'écran, sinon une hitbodedout se perdait derrière son bravo.
+    try { stockage.setItem(nom, JSON.stringify(valeur)); } catch { surEchec?.(nom); }
   };
   const prefs = () => lit(PREFS);
   const get = (cle, defaut) => { const v = prefs()[cle]; return v === undefined ? defaut : v; };
@@ -76,6 +80,13 @@ export function creeStore(stockage, { maintenant = () => new Date(), fuseau } = 
   // Les dix psaumes du Tikoun (Tikkun.ORDRE), pour le journal de ses lectures complètes (04/11).
   const TIKKUN_ORDRE = [16, 32, 41, 42, 59, 77, 90, 105, 137, 150];
   const today = () => isoLocal(maintenant());
+  /** Écrit un réglage booléen qui pèse sur le passé et date son changement (HistoriqueReglage). */
+  const changeDate = (cle, valeur) => {
+    const ancienne = cle === 'in_israel' ? store.inIsrael() : store.shabbatMode();
+    set(`${cle}_histoire`, HistoriqueReglage.encoder(HistoriqueReglage.apresChangement(
+      HistoriqueReglage.decoder(get(`${cle}_histoire`)), today(), ancienne, valeur)));
+    set(cle, valeur);
+  };
   // Le jour du Tikoun bascule à 4 h, pas à minuit : commencé à 23 h 45, il se finit après minuit (Store.jourTikkun, 02/11).
   // Quatre heures d'horloge, comme LocalDateTime.minusHours : la nuit du changement d'heure ne décale rien.
   const jourTikkun = () => { const n = maintenant(); return isoLocal(new Date(n.getFullYear(), n.getMonth(), n.getDate(), n.getHours() - 4, n.getMinutes())); };
@@ -132,6 +143,15 @@ export function creeStore(stockage, { maintenant = () => new Date(), fuseau } = 
     totalMinutes: () => Object.values(days()).reduce((s, r) => s + r.minutes, 0),
     /** Toutes les journées, pour « Mon parcours » (19/10). */
     jours: () => Object.values(days()),
+    // --- La garde des données (13/11, FWEBCODE-01 ; avis.js) : pour ce navigateur seulement, hors de l'export.
+    /** La plus ancienne date du journal, note seule comprise ; null s'il est vide. */
+    premierJour: () => Object.keys(days()).filter(dateValide).sort()[0] ?? null,
+    /** Le jour de la dernière sauvegarde connue (un export, ou l'import d'un fichier) ; null : jamais. */
+    derniereSauvegarde: () => { const d = get('derniere_sauvegarde', null); return typeof d === 'string' && dateValide(d) ? d : null; },
+    setDerniereSauvegarde: (iso) => set('derniere_sauvegarde', iso),
+    /** Les avis de l'accueil refermés, chacun avec son jour : { installer, importer, exporter }. */
+    avisReportes: () => { const a = get('avis_reportes', null); return a && typeof a === 'object' && !Array.isArray(a) ? a : {}; },
+    reporteAvis: (cle) => set('avis_reportes', { ...store.avisReportes(), [cle]: today() }),
     /** Les minutes des jours faits, par date (Store.bilan, paliers du 11/10). */
     minutesParJour: () => Object.fromEntries(Object.values(days()).filter((r) => r.faite).map((r) => [r.date, r.minutes])),
     /** null tant que les paliers n'ont jamais été regardés : le premier passage ne fête rien. */
@@ -242,23 +262,54 @@ export function creeStore(stockage, { maintenant = () => new Date(), fuseau } = 
 
     // --- Chabbat, fêtes, pauses ---------------------------------------------
     shabbatMode: () => get('pause_shabbat', true),
-    setShabbatMode: (v) => set('pause_shabbat', !!v),
+    setShabbatMode: (v) => { changeDate('pause_shabbat', !!v); },
     inIsrael: () => get('in_israel', israelParDefaut(fuseau ?? Intl.DateTimeFormat().resolvedOptions().timeZone)),
-    setInIsrael: (v) => set('in_israel', !!v),
+    /**
+     * La région a été choisie à la main dans les réglages (audit du 12/11, FCALENDRIER-06,
+     * Store.inIsraelManuel) : une reprise de la position ne la réécrit plus. Choisir un lieu
+     * efface ce drapeau et redéduit la région.
+     */
+    inIsraelManuel: () => get('in_israel_manuel', false) === true,
+    setInIsrael: (v, manuel = false) => {
+      changeDate('in_israel', !!v);
+      set('in_israel_manuel', !!manuel);
+      // Un statut choisi répond à la question en attente (audit du 16/11).
+      if (manuel) set('region_proposee', null);
+    },
+    /**
+     * Le statut que le lieu suggère quand il diffère du statut enregistré (Store.regionProposee,
+     * audit du 16/11) : true, Israël ; false, diaspora ; null, aucune question en attente.
+     */
+    regionProposee: () => { const v = get('region_proposee', null); return typeof v === 'boolean' ? v : null; },
     /**
      * Le lieu des zmanim (10/10) : { nom, latitude, longitude, altitude,
      * fuseau, ville } ; null tant que rien n'est choisi. Il reste dans le
-     * navigateur. Il règle aussi Israël ou diaspora (deuxième jour de fête).
+     * navigateur.
      */
     lieu: () => {
       const l = get('lieu_zmanim', null);
       return l && Number.isFinite(l.latitude) && Number.isFinite(l.longitude) && l.fuseau ? l : null;
     },
-    setLieu(lieu, ville = null) {
+    /**
+     * La région que le lieu indique (impliquee : une ville le dit, une position se lit sur le
+     * contour du territoire) ne règle le statut Israël ou diaspora que pour le tout premier lieu ;
+     * ensuite, si elle diffère, elle devient une question (audit du 16/11, decisionRegion : le
+     * statut suit la résidence, Choul'han Aroukh 496:3). null : rien à décider (simple renommage).
+     */
+    setLieu(lieu, ville = null, impliquee = ville ? ville.pays === 'IL' : dansIsrael(lieu.latitude, lieu.longitude)) {
+      const premier = store.lieu() === null;
       set('lieu_zmanim', { ...lieu, ville: ville?.id ?? null });
-      // Une ville dit Israël ou diaspora ; la position, elle, suit le fuseau du
-      // téléphone, comme la valeur par défaut (israelParDefaut).
-      set('in_israel', ville ? ville.pays === 'IL' : israelParDefaut(lieu.fuseau));
+      if (impliquee === null) return;
+      const d = decisionRegion(impliquee, store.inIsrael(), premier, store.inIsraelManuel());
+      if (d.region !== null) store.setInIsrael(d.region);
+      set('region_proposee', d.proposition);
+    },
+    /**
+     * La position du téléphone comme lieu des zmanim (Store.setLieuPosition) : le statut n'en est
+     * jamais réécrit (audit du 16/11), que la position soit choisie dans la liste ou reprise.
+     */
+    setLieuPosition(lieu) {
+      store.setLieu(lieu, null);
     },
     /**
      * Le vol des zmanim en vol (28/10, Store.vol) : { numero, depart, arrivee
@@ -288,6 +339,9 @@ export function creeStore(stockage, { maintenant = () => new Date(), fuseau } = 
     /** Pas de Ta'hanoun en fin de Tichri : toujours en Edot, au choix en Sfard (Store.sansTahanounFinTichri). */
     sansTahanounFinTichri: () => ({ edot: true, sefard: get('sans_tahanoun_fin_tichri_sfard', false) === true }[store.siddurNusah()] ?? false),
     setSansTahanounFinTichriSfard: (v) => set('sans_tahanoun_fin_tichri_sfard', v),
+    /** « Pas de Ta'hanoun aujourd'hui » (Store.sansTahanounLe, audit du 16/11) : le jour choisi, et lui seul. */
+    sansTahanounLe: (iso) => get('sans_tahanoun_jour', null) === iso,
+    setSansTahanounLe: (iso, sans) => set('sans_tahanoun_jour', sans ? iso : null),
     /** Le calendrier s'ouvre sur le mois hébreu ; le mois civil est au choix (Store.calendrierCivil). */
     calendrierCivil: () => get('calendrier_civil', false) === true,
     setCalendrierCivil: (v) => set('calendrier_civil', v),
@@ -300,37 +354,50 @@ export function creeStore(stockage, { maintenant = () => new Date(), fuseau } = 
     },
     isExempt(date) {
       if (store.pausedDates().has(date)) return true;
-      return store.shabbatMode() && estJourChome(date, store.inIsrael());
+      // Chaque jour se juge avec le réglage en vigueur ce jour-là (FDONNEES-05).
+      const valeur = (cle, actuelle) => HistoriqueReglage.valeurLe(HistoriqueReglage.decoder(get(`${cle}_histoire`)), date, actuelle);
+      return valeur('pause_shabbat', store.shabbatMode()) && estJourChome(date, valeur('in_israel', store.inIsrael()));
+    },
+    /**
+     * isExempt pour un parcours de nombreux jours (revue du 15/11) : les réglages lus une seule
+     * fois, au lieu de trois relectures complètes par jour. Sur dix ans de jours, l'accueil se
+     * figeait d'autant plus que les réglages étaient gros.
+     */
+    exempteur() {
+      const pauses = store.pausedDates(), chabbat = store.shabbatMode(), israel = store.inIsrael();
+      return (date) => pauses.has(date) || (chabbat && estJourChome(date, israel));
     },
 
     /** Jours consécutifs validés ; les jours exemptés ne comptent pas et ne cassent pas. */
     streak() {
       const faits = store.joursFaits();
+      const exempt = store.exempteur();
       let jour = today();
-      if (!faits.has(jour) && !store.isExempt(jour)) jour = ajouteJours(jour, -1);
+      if (!faits.has(jour) && !exempt(jour)) jour = ajouteJours(jour, -1);
       let compte = 0;
       for (let garde = 0; garde < 3650; garde++) {
         if (faits.has(jour)) compte++;
-        else if (!store.isExempt(jour)) return compte;
+        else if (!exempt(jour)) return compte;
         jour = ajouteJours(jour, -1);
       }
       return compte;
     },
 
     /** La plus longue série jamais tenue (Plaque.meilleureSerie), au moins la série en cours. */
-    meilleureSerie: () => Math.max(Plaque.meilleureSerie(store.joursFaits(), (d) => store.isExempt(d)), store.streak()),
+    meilleureSerie: () => Math.max(Plaque.meilleureSerie(store.joursFaits(), store.exempteur()), store.streak()),
 
     /** La semaine en cours, du dimanche au samedi. */
     currentWeek() {
       const faits = store.joursFaits();
       const auj = today();
       const dimanche = ajouteJours(auj, -jourSemaine(auj));
+      const exempt = store.exempteur();
       return Array.from({ length: 7 }, (_, i) => {
         const date = ajouteJours(dimanche, i);
         return {
           date,
           done: faits.has(date),
-          exempt: store.isExempt(date),
+          exempt: exempt(date),
           shabbat: i === 6,
           future: date > auj,
         };
@@ -351,6 +418,9 @@ export function creeStore(stockage, { maintenant = () => new Date(), fuseau } = 
     /** La lecture (ReglagesLecture.kt) : taille des lettres de 0,8 à 2, fond noir. */
     lectureEchelle: () => Math.min(2, Math.max(0.8, Number(get('lecture_echelle', 1)) || 1)),
     setLectureEchelle: (e) => set('lecture_echelle', Math.round(Math.min(2, Math.max(0.8, e)) * 10) / 10),
+    /** La vitesse du défilement automatique (16/11), commune à tous les écrans de lecture : niveau 1 à 10, 3 par défaut. */
+    lectureDefilementVitesse: () => borneNiveau(get('lecture_defilement_vitesse', NIVEAU_DEFAUT)),
+    setLectureDefilementVitesse: (n) => set('lecture_defilement_vitesse', borneNiveau(n)),
     // La police des textes (12/10) : 'serif' (par défaut), 'sans', 'arrondie' ; 'frank', 'david', 'rachi', 'miriam' (14/10).
     lecturePolice: () => (['serif', 'sans', 'arrondie', 'frank', 'david', 'rachi', 'miriam'].includes(get('lecture_police', 'serif')) ? get('lecture_police', 'serif') : 'serif'),
     setLecturePolice: (p) => set('lecture_police', p),
@@ -521,6 +591,7 @@ export function creeStore(stockage, { maintenant = () => new Date(), fuseau } = 
           daily_goal_minutes: get('daily_goal_minutes', 0),
           pause_shabbat: store.shabbatMode(),
           in_israel: store.inIsrael(),
+          in_israel_manuel: store.inIsraelManuel(),
           // La hitbodedout guidée (02/11), sous la clé d'Android.
           guided_hitbodedut: store.guidedHitbodedut(),
           first_name: store.firstName(),
@@ -597,11 +668,19 @@ export function creeStore(stockage, { maintenant = () => new Date(), fuseau } = 
       }
       writeDays(merged);
       // Le journal enrichi (02/11) : un jour déjà noté ici garde ce qu'il a, comme la note.
+      // Une seule lecture et une seule écriture (revue du 15/11) : une par jour relisait tout le
+      // journal à chaque fois, et 10 000 jours figeaient l'onglet plus de deux minutes.
       if (root.journal_plus && typeof root.journal_plus === 'object' && !Array.isArray(root.journal_plus)) {
+        const j = lit(PREFS_JOURNAL);
+        const t = j.journal_plus && typeof j.journal_plus === 'object' && !Array.isArray(j.journal_plus) ? j.journal_plus : {};
+        let change = false;
         for (const [date, e] of Object.entries(root.journal_plus)) {
           if (!dateValide(date) || date >= demain) continue;
-          if (JournalPlus.vide(store.journalPlus(date))) store.setJournalPlus(date, JournalPlus.lire(e));
+          if (!JournalPlus.vide(JournalPlus.lire(t[date]))) continue;
+          const v = JournalPlus.versJson(JournalPlus.lire(e));
+          if (v) { t[date] = v; change = true; }
         }
+        if (change) { j.journal_plus = t; ecrit(PREFS_JOURNAL, j); }
       }
 
       const s = root.settings && typeof root.settings === 'object' ? root.settings : null;
@@ -614,7 +693,9 @@ export function creeStore(stockage, { maintenant = () => new Date(), fuseau } = 
         const texteNonVide = (cle, pref) => { if (typeof s[cle] === 'string' && s[cle].trim() !== '' && s[cle].length <= 100) set(pref ?? cle, s[cle]); };
         entier('window_start'); entier('window_end'); entier('snooze_minutes', null, 1, 240);
         entier('target_minutes', null, 1, 240); entier('daily_goal_minutes', null, 0, 240);
-        bool('pause_shabbat'); bool('in_israel');
+        if (typeof s.pause_shabbat === 'boolean') store.setShabbatMode(s.pause_shabbat);
+        if (typeof s.in_israel === 'boolean') store.setInIsrael(s.in_israel);
+        bool('in_israel_manuel');
         bool('guided_hitbodedut');
         bool('reminder_enabled', 'reminder_on'); entier('reminder_minutes');
         if (Array.isArray(s.reminder_times)) {
@@ -637,18 +718,23 @@ export function creeStore(stockage, { maintenant = () => new Date(), fuseau } = 
       }
       // Version 2 : réunis à ce que ce navigateur a déjà, sans rien retirer.
       const chaines = (a) => (Array.isArray(a) ? [...new Set(a.filter((x) => typeof x === 'string' && x.trim() !== ''))] : []);
+      // Bornés (revue du 15/11), comme Store.importJson : un fichier fabriqué ne remplit plus le
+      // stockage relu à chaque écran.
       const tikkun = chaines(root.tikkun_journal).filter((d) => dateValide(d) && d < demain);
-      if (tikkun.length) set('tikkun_journal', [...new Set([...store.tikkunJournal(), ...tikkun])].sort().join(','));
-      const favoris = chaines(root.favoris).filter((c) => /^[sl]:/.test(c));
-      if (favoris.length) set('favoris', [...new Set([...store.favoris(), ...favoris])]);
-      const chizuk = chaines(root.chizuk_favoris);
-      if (chizuk.length) set('chizuk_favoris', [...new Set([...store.chizukFavoris(), ...chizuk])]);
+      if (tikkun.length) set('tikkun_journal', [...new Set([...store.tikkunJournal(), ...tikkun])].sort().slice(-4000).join(','));
+      const favoris = chaines(root.favoris).filter((c) => /^[sl]:/.test(c) && !c.includes('|') && c.length <= 100);
+      if (favoris.length) set('favoris', [...new Set([...store.favoris(), ...favoris])].slice(0, 200));
+      const chizuk = chaines(root.chizuk_favoris).filter((x) => !x.includes('|') && x.length <= 40);
+      if (chizuk.length) set('chizuk_favoris', [...new Set([...store.chizukFavoris(), ...chizuk])].slice(0, 500));
       if (Array.isArray(root.marques_pages)) {
         const ici = store.marques();
         const meme = (a, b) => a.cle === b.cle && a.nusah === b.nusah && a.section === b.section && a.bloc === b.bloc;
-        const entrantes = root.marques_pages.filter((m) => m && typeof m.cle === 'string' && m.cle !== '' && typeof m.nusah === 'string'
-          && Number.isInteger(m.section) && m.section >= 0 && Number.isInteger(m.bloc) && m.bloc >= 0)
-          .map((m) => ({ cle: m.cle, nusah: m.nusah, section: m.section, bloc: m.bloc, apercu: typeof m.apercu === 'string' ? m.apercu : '' }))
+        const entrantes = root.marques_pages.filter((m) => m && typeof m.cle === 'string' && m.cle !== '' && m.cle.length <= 100
+          && typeof m.nusah === 'string' && m.nusah.length <= 20
+          && Number.isInteger(m.section) && m.section >= 0 && Number.isInteger(m.bloc) && m.bloc >= 0
+          // Un psaume hors de 1 à 150 donnait un écran vide au toucher (revue du 15/11).
+          && (m.cle !== 't:tehilim' || (m.section >= 1 && m.section <= 150 && m.bloc >= 1)))
+          .map((m) => ({ cle: m.cle, nusah: m.nusah, section: m.section, bloc: m.bloc, apercu: typeof m.apercu === 'string' ? m.apercu.slice(0, 200) : '' }))
           .filter((m) => !ici.some((x) => meme(x, m)));
         if (entrantes.length) set('marques_pages', [...ici, ...entrantes].slice(0, 60));
       }

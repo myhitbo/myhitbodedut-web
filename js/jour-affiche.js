@@ -2,7 +2,8 @@
 // 10/10) : les ajouts à nommer, les horaires avec l'entrée et la sortie de
 // Chabbat ou de fête, la grille d'un mois. Mêmes règles, mêmes cas de test.
 
-import { C, jour } from './calendrier-juif.js';
+import { C, calendrier, jour, jourDeLaPriere } from './calendrier-juif.js';
+import { JewishCalendar, JewishDate } from '../vendor/kosher-zmanim-0.9.0.min.js';
 import { conditionsPour, libelleHallel } from './siddur-jour.js';
 import * as Z from './zmanim.js';
 import { SiddurMoment } from './regles.js';
@@ -19,8 +20,8 @@ export function ajouts(c0, nusah = 'edot', enIsrael = false, sansTahanounFinTich
   // Les jours de bascule, les deux formules (bascule_pluie) ; sinon l'une ou l'autre.
   if (c.has(C.MACHIV_HAROUAH)) l.push('ajout_machiv_harouah');
   if (c.has(C.MORID_HATAL) && (!c.has(C.MACHIV_HAROUAH) || c.has('bascule_pluie'))) l.push('ajout_morid_hatal');
-  // La 9ᵉ bénédiction (JourAffiche.ajouts) : texte des Edot ; rien le Chabbat.
-  if (!c.has(C.CHABBAT)) {
+  // La 9ᵉ bénédiction (JourAffiche.ajouts) : texte des Edot ; rien le Chabbat ni un Yom Tov (Kippour compris).
+  if (!c.has(C.CHABBAT) && !c.has('yom_tov')) {
     if (nusah === 'edot') l.push(c.has(C.TAL_OUMATAR) ? 'ajout_barekh_alenou' : 'ajout_barkhenou');
     else l.push(c.has(C.TAL_OUMATAR) ? 'ajout_tal_oumatar' : 'ajout_berakha');
   }
@@ -30,13 +31,25 @@ export function ajouts(c0, nusah = 'edot', enIsrael = false, sansTahanounFinTich
     if (nusah !== 'edot') l.push('ajout_anenou_particulier_minha');
     else l.push(c.has(C.TICHA_BEAV) ? 'ajout_anenou_particulier_trois' : 'ajout_anenou_particulier_matin_minha');
   }
-  if (c.has(C.TICHA_BEAV)) l.push('ajout_ticha_beav');
+  // Na'hem (audit du 16/11) : Edot aux trois offices (Yalkut Yosef, Kitsour 557:1) ; Sfard, Ashkenaz à Min'ha seulement (Rema 557:1).
+  if (c.has(C.TICHA_BEAV)) l.push(nusah === 'edot' ? 'ajout_ticha_beav_trois' : 'ajout_ticha_beav_minha');
   if (c.has(C.YAALE_VEYAVO)) l.push('ajout_yaale_veyavo');
   if (c.has(C.AL_HANISSIM)) l.push('ajout_al_hanissim');
   const hallel = libelleHallel(nusah, c);
   if (hallel) l.push(hallel);
-  // Le Chabbat, il n'y a pas d'Amida de semaine où dire ou taire Ta'hanoun.
-  if (!c.has(C.CHABBAT)) l.push(c.has(C.TAHANOUN_CHAHARIT) ? 'ajout_tahanoun' : 'ajout_sans_tahanoun');
+  // Le Chabbat et un Yom Tov (Kippour compris), il n'y a pas d'Amida de semaine où dire ou taire Ta'hanoun.
+  // Le dimanche d'un Pourim triple hors de Jérusalem, l'Ashkenaz suit le Halikhot Chlomo contre le Michna Beroura (131:33).
+  if (!c.has(C.CHABBAT) && !c.has('yom_tov')) {
+    // Le réglage ponctuel (deuil, brit, 'hatan ; audit du 16/11) : on dit d'où vient l'absence.
+    l.push(c.has(C.TAHANOUN_CHAHARIT) ? 'ajout_tahanoun'
+      : c.has('sans_tahanoun_ponctuel') ? 'ajout_sans_tahanoun_ponctuel'
+      : nusah === 'ashkenaz' && c.has('pourim_triple_hors_jerusalem') ? 'ajout_sans_tahanoun_halikhot_chlomo'
+      // Pessa'h chéni (Ashkenaz) : un usage que ni le Choul'han Aroukh ni le Michna Beroura ne citent (JourAffiche.ajouts).
+      : nusah === 'ashkenaz' && c.has('jour_pessah_cheni') ? 'ajout_sans_tahanoun_pessah_cheni' : 'ajout_sans_tahanoun');
+  }
+  // La veille de Kippour : Vidouï et « על חטא » après l'Amida de Min'ha, dans le ma'hzor (Choul'han Aroukh O.H. 607:1 ;
+  // Kitsour Yalkout Yossef 607:1 ; audit du 16/11).
+  if (c.has('erev_kippour')) l.push('ajout_vidoui_erev_kippour');
   return l;
 }
 
@@ -45,26 +58,94 @@ const lendemain = (iso) => {
   return new Date(Date.UTC(a, m - 1, j + 1, 12)).toISOString().slice(0, 10);
 };
 
-/** Les horaires du jour, avec l'allumage et la sortie (règles de JourAffiche.horaires). */
-export function horaires(lieu, iso, enIsrael, minutes) {
-  const aujourdhui = jour(iso, enIsrael).chome;
-  const demain = jour(lendemain(iso), enIsrael).chome;
+/**
+ * Les horaires du jour, avec l'allumage et la sortie (règles de JourAffiche.horaires). Le profil suit
+ * le nusah (audit du 16/11) : pour les Edot, sortie à Rabbénou Tam en 72 min zmaniyot (Kitsour YY 293:3
+ * et 293:7). Jeûnes publics : début à l'aube, fin à tsét, et la veille du 9 Av début à la chki'a
+ * (Kitsour YY 550:2). Veille de Pessa'h : heures du 'hamets (Zmanim.hamets), et le vendredi quand elle
+ * tombe un Chabbat, la fin de la 5e heure (CA 444:2).
+ */
+export function horaires(lieu, iso, enIsrael, minutes, nusah = '') {
+  const jourJ = jour(iso, enIsrael);
+  const jourDemain = jour(lendemain(iso), enIsrael);
+  const aujourdhui = jourJ.chome;
+  const demain = jourDemain.chome;
   // Fête un vendredi (FCALENDRIER-01) : les bougies de Chabbat avant la chki'a, jamais à tsét.
   const [a, m, j] = iso.split('-').map(Number);
-  const veilleDeChabbat = new Date(Date.UTC(a, m - 1, j, 12)).getUTCDay() === 5;
-  const base = Z.jour(lieu, iso);
+  const semaine = new Date(Date.UTC(a, m - 1, j, 12)).getUTCDay();
+  const veilleDeChabbat = semaine === 5;
+  const edot = nusah === 'edot';
+  const base = Z.jour(lieu, iso, nusah);
   const tset = base.find((z) => z.cle === 'tset');
+  const fin = edot ? base.find((z) => z.cle === 'tset_rt') : tset;
+  const apres = semaine === 6 ? fin : tset;
+  const jeune = jourJ.conditions.has(C.JEUNE);
+  const av = jourJ.conditions.has(C.TICHA_BEAV);
+  const veilleAv = jourDemain.conditions.has(C.TICHA_BEAV);
+  const hamets = jourJ.fetes.includes('erev_pessah') ? Z.hamets(lieu, iso, nusah)
+    : veilleDeChabbat && jourDemain.fetes.includes('erev_pessah') ? Z.hamets(lieu, iso, nusah).filter((z) => z.cle === 'hamets_biour') : [];
   const sortie = [];
   for (const z of base) {
     if (z.cle === 'chkia' && demain && (!aujourdhui || veilleDeChabbat)) sortie.push(Z.allumage(lieu, iso, minutes));
+    if (z.cle === 'chkia' && veilleAv) sortie.push({ ...z, cle: 'debut_jeune' });
     sortie.push(z);
-    if (z.cle === 'tset') {
-      if (aujourdhui && !demain) sortie.push({ ...tset, cle: 'sortie' });
-      if (aujourdhui && demain && !veilleDeChabbat) sortie.push({ ...tset, cle: 'allumage', methode: 'apres_tset', parametres: '' });
-    }
+    if (z.cle === 'alot' && jeune && !av) sortie.push({ ...z, cle: 'debut_jeune' });
+    if (z.cle === 'szt_gra') sortie.push(...hamets);
+    if (z.cle === 'tset' && jeune) sortie.push({ ...z, cle: 'fin_jeune' });
+    // Edot : les deux sorties, au choix du propriétaire (17/11) : tsét des Gueonim, puis Rabbénou Tam.
+    if (edot && z.cle === 'tset' && aujourdhui && !demain) sortie.push({ ...z, cle: 'sortie_gueonim' });
+    if (z.cle === fin.cle && aujourdhui && !demain) sortie.push(edot ? { ...fin, cle: 'sortie', methode: 'rabbenou_tam_zmaniyot' } : { ...fin, cle: 'sortie' });
+    if (z.cle === apres.cle && aujourdhui && demain && !veilleDeChabbat) sortie.push({ ...apres, cle: 'allumage', methode: edot ? 'apres_sortie' : 'apres_tset', parametres: '' });
   }
   return sortie;
 }
+
+/** Les offices de semaine du siddour (audit du 16/11, JourAffiche.OFFICES). */
+export const OFFICES = ['chaharit', 'minha', 'arvit'];
+
+/**
+ * Audit du 16/11 (JourAffiche.momentOuvrable) : pas d'office de semaine proposé quand la prière relève
+ * d'un Chabbat ou d'un Yom tov ; [moment] sinon. [heures] : l'heure locale (0-23).
+ */
+export function momentOuvrable(moment, iso, heures, enIsrael) {
+  return moment && OFFICES.includes(moment) && jour(jourDeLaPriere(moment, iso, heures), enIsrael).chome ? null : moment;
+}
+
+/**
+ * La note du Yom tov chéni pour un voyageur (JourAffiche.noteYomTovCheni, audit du 16/11) : le
+ * calendrier suit le statut (la résidence) ; un jour chômé seulement en diaspora, quand le lieu est
+ * de l'autre région, la note dit ce qui change (Choul'han Aroukh 496:3 ; Michna Beroura 496:13 ;
+ * en Ashkenaz, l'avis du 'Hakham Tsvi). Une clé de chaîne, ou null.
+ */
+export function noteYomTovCheni(iso, statutIsrael, lieuEnIsrael, nusah) {
+  if (statutIsrael === lieuEnIsrael) return null;
+  if (!jour(iso, false).chome || jour(iso, true).chome) return null;
+  if (statutIsrael) return 'note_ytc_ben_israel';
+  return nusah === 'ashkenaz' ? 'note_ytc_ben_houl_ashkenaz' : 'note_ytc_ben_houl';
+}
+
+/**
+ * Un lieu où la ligne de date halakhique est discutée (JourAffiche.ligneDateDiscutee, audit du 16/11) :
+ * à l'est de 125,2° E (90° de Jérusalem, la ligne du 'Hazon Ich) ou à l'ouest de 150° O.
+ */
+export const ligneDateDiscutee = (longitude) => longitude >= 125.2 || longitude <= -150;
+
+export const ALLUMAGE_JERUSALEM = 40;
+export const ALLUMAGE_EDOT = 20;
+
+/**
+ * La proposition sous le réglage d'allumage, à Jérusalem (JourAffiche.propositionAllumage, audit du
+ * 16/11) : 40 min, « coutume de Jérusalem », pour Sfard et Ashkenaz ; environ 20 min pour les Edot
+ * (Kitsour Yalkut Yosef 263:47). Une clé de chaîne, ou null.
+ */
+export function propositionAllumage(nusah, mukafChoma, minutes) {
+  if (!mukafChoma) return null;
+  if (nusah === 'edot') return minutes !== ALLUMAGE_EDOT ? 'reglage_allumage_proposition_edot' : null;
+  return minutes !== ALLUMAGE_JERUSALEM ? 'reglage_allumage_proposition' : null;
+}
+
+/** Le libellé « · coutume de Jérusalem » : 40 min, à Jérusalem, hors Edot. */
+export const coutumeJerusalem = (nusah, mukafChoma, minutes) => mukafChoma && nusah !== 'edot' && minutes === ALLUMAGE_JERUSALEM;
 
 /**
  * Le texte du siddour que suggère l'instant [maintenant] (Date) d'après les
@@ -72,27 +153,61 @@ export function horaires(lieu, iso, enIsrael, minutes) {
  * dans les creux ('hatsot – min'ha guedola, chki'a – tsét) ; sans zmanim,
  * les heures fixes de SiddurMoment.
  */
-export function momentDuSiddour(lieu, maintenant) {
+/**
+ * [enIsrael] : pour le Tikoun 'hatsot de la nuit (sansTikounHatsot) ; [nusah] : le profil des zmanim
+ * (Z.jour, audit du 16/11) et le Tikoun Ra'hel de midi (tikounRahelDeMidi). Comme JourAffiche.momentDuSiddour.
+ */
+export function momentDuSiddour(lieu, maintenant, enIsrael = true, nusah = '') {
   const parties = Object.fromEntries(new Intl.DateTimeFormat('en-CA', { timeZone: lieu.fuseau, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
     .formatToParts(maintenant).map((p) => [p.type, p.value]));
   const iso = `${parties.year}-${parties.month}-${parties.day}`;
   const minutes = Number(parties.hour) * 60 + Number(parties.minute);
-  const instants = (d) => Object.fromEntries(Z.jour(lieu, d).map((x) => [x.cle, x.instant]));
-  const z = instants(iso);
   const [a, m, j] = iso.split('-').map(Number);
-  const hier = instants(new Date(Date.UTC(a, m - 1, j - 1, 12)).toISOString().slice(0, 10));
+  const decale = (n) => new Date(Date.UTC(a, m - 1, j + n, 12)).toISOString().slice(0, 10);
+  // La nuit appartient au jour hébreu civil après minuit, au lendemain avant minuit (audit du 16/11).
+  const sans = sansTikounHatsot(minutes < 12 * 60 ? iso : decale(1), enIsrael);
+  const tikoun = sans ? 'chema_coucher' : 'tikoun_hatsot';
+  // Le profil des zmanim du noussa'h (audit du 16/11, Zmanim.jour).
+  const instants = (d) => Object.fromEntries(Z.jour(lieu, d, nusah).map((x) => [x.cle, x.instant]));
+  const z = instants(iso);
+  // Aube absente autour du solstice (Londres, Berlin, Moscou…) : michéyakir, puis le lever du soleil, en tiennent lieu.
+  if (!z.alot) z.alot = z.misheyakir || z.netz;
+  if (!z.misheyakir) z.misheyakir = z.netz;
+  const hier = instants(decale(-1));
   const cles = ['alot', 'misheyakir', 'chatsot', 'minha_gedola', 'chkia', 'tset', 'chatsot_layla'];
-  if (cles.some((c) => !z[c]) || !hier.chatsot_layla) return SiddurMoment.suggestion(Math.floor(minutes / 60), minutes % 60);
+  if (cles.some((c) => !z[c]) || !hier.chatsot_layla) return SiddurMoment.suggestion(Math.floor(minutes / 60), minutes % 60, sans);
   const t = +maintenant;
   const avant = (c) => t < +z[c];
-  if (avant('alot')) return t >= +hier.chatsot_layla ? 'tikoun_hatsot' : 'chema_coucher';
+  if (avant('alot')) return t >= +hier.chatsot_layla ? tikoun : 'chema_coucher';
   if (avant('misheyakir')) return 'birkot_hachahar';
   if (avant('chatsot')) return 'chaharit';
-  if (avant('minha_gedola')) return null;
+  if (avant('minha_gedola')) return tikounRahelDeMidi(iso, nusah) ? 'tikoun_hatsot' : null;
   if (avant('chkia')) return 'minha';
   if (avant('tset')) return null;
   if (avant('chatsot_layla')) return minutes > 12 * 60 && minutes < 22 * 60 + 30 ? 'arvit' : 'chema_coucher';
-  return 'tikoun_hatsot';
+  return tikoun;
+}
+
+/**
+ * Pas de Tikoun 'hatsot la nuit du jour hébreu iso : Chabbat, Yom tov (le second jour en diaspora),
+ * 'Hol hamoed Pessa'h (JourAffiche.sansTikounHatsot ; audit du 16/11 : consigne du texte ;
+ * Kitsour Yalkut Yosef, דיני תיקון חצות, se'if נה).
+ */
+export function sansTikounHatsot(iso, enIsrael) {
+  const c = calendrier(iso, enIsrael, false, false);
+  return new Date(`${iso}T12:00:00Z`).getUTCDay() === 6 || c.isYomTovAssurBemelacha() || c.getYomTovIndex() === JewishCalendar.CHOL_HAMOED_PESACH;
+}
+
+/**
+ * Bein hamétsarim, du 17 Tamouz au 8 Av, sauf Chabbat et Roch 'Hodech Av : le Tikoun Ra'hel après
+ * 'hatsot du jour (JourAffiche.tikounRahelDeMidi ; Kitsour Yalkut Yosef, דיני תיקון חצות, se'ifim מה
+ * et נז) ; usage des Edot et du Sfard, pas de l'Ashkenaz.
+ */
+export function tikounRahelDeMidi(iso, nusah) {
+  if (nusah === 'ashkenaz' || new Date(`${iso}T12:00:00Z`).getUTCDay() === 6) return false;
+  const c = calendrier(iso, false, false, false);
+  const j = c.getJewishDayOfMonth();
+  return (c.getJewishMonth() === JewishDate.TAMMUZ && j >= 17) || (c.getJewishMonth() === JewishDate.AV && j >= 2 && j <= 8);
 }
 
 /** Les semaines d'un mois civil (mois 1-12), du dimanche au samedi ; null hors du mois. */
@@ -169,16 +284,24 @@ export function clesHilloula(mois, jourH, emb, dernierJour, ashkenaz = false) {
   const m = mois === 12 && !emb ? ['adar', 'adar1', 'adar2'] : mois === 12 ? (ashkenaz ? ['adar', 'adar1'] : ['adar1'])
     : mois === 13 ? (ashkenaz ? ['adar2'] : ['adar', 'adar2']) : [String(mois)];
   const jours = jourH === 29 && dernierJour ? [29, 30] : [jourH];
-  return m.flatMap((k) => jours.map((j) => `${k}-${j}`));
+  const base = m.flatMap((k) => jours.map((j) => `${k}-${j}`));
+  // Le 30 Adar n'existe qu'en Adar I (audit du 16/11, Hilloulot.cles) : une année embolismique, le 30 Adar I
+  // pour tous (Kitsour Yalkut Yosef 40:22) ; une année simple, en Ashkenaz, le 30 Chevat (Michna Beroura 568:42).
+  const trente = ['adar-30', 'adar1-30'];
+  if (emb && mois === 13) return base.filter((k) => k !== 'adar-30');
+  if (emb && mois === 12 && jourH === 30 && !base.includes('adar-30')) return [...base, 'adar-30'];
+  if (!emb && ashkenaz && mois === 12) return base.filter((k) => !trente.includes(k));
+  if (!emb && ashkenaz && mois === 11 && jourH === 30) return [...base, ...trente];
+  return base;
 }
 
 /**
- * Hilloulot.duJour (04/11) : d'abord les mieux connus, ceux que le plus de sources donnent,
- * puis ceux qui ont une notice ; ceux dont la date est mise en doute en dernier. À égalité,
- * l'ordre du fichier.
+ * Hilloulot.duJour (04/11) : d'abord les mieux connus, ceux que le plus de sources donnent ;
+ * à nombre de sources égal, ceux dont rien n'est mis en doute, puis ceux qui ont une notice.
+ * À égalité, l'ordre du fichier.
  */
 export function hilloulotDuJour(table, cles) {
-  const cle = (h) => [h.d ? 1 : 0, -h.s.length, h.t ? 0 : 1];
+  const cle = (h) => [-h.s.length, h.d ? 1 : 0, h.t ? 0 : 1];
   const compare = (a, b) => { const x = cle(a); const y = cle(b); return x[0] - y[0] || x[1] - y[1] || x[2] - y[2]; };
   return cles.flatMap((k) => table[k] ?? []).map((h, i) => [h, i])
     .sort((x, y) => compare(x[0], y[0]) || x[1] - y[1]).map(([h]) => h);
@@ -220,9 +343,12 @@ export function lienHyomi(iso) {
   return `https://hyomi.org.il/day.php?month1=0&dd=${d}&mm=${m}&yy=${a}`;
 }
 
-/** La halakha du jour, dans la langue de l'application. */
+/**
+ * La halakha du jour, dans la langue de l'application (le site a he, fr, en). Ni l'espagnol ni
+ * l'arabe : l'anglais pour l'un, le français, lu en Tunisie, pour l'autre (Hilloulot.lienHalakha).
+ */
 export function lienHalakha(langue) {
-  const code = /^(he|iw)/.test(langue) ? 'he' : /^en/.test(langue) ? 'en' : 'fr';
+  const code = /^(he|iw)/.test(langue) ? 'he' : /^(en|es)/.test(langue) ? 'en' : 'fr';
   return `https://halachayomit.co.il/${code}/default.aspx`;
 }
 

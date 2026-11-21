@@ -36,15 +36,10 @@ export const ChizukRules = {
     [hebreu.trim(), traduction.trim() || null, `— ${source}`, lien].filter(Boolean).join('\n\n'),
 
   /**
-   * L'hébreu à afficher : sans nikkoud quand la licence de l'édition ne
-   * permet pas d'en reprendre la vocalisation.
+   * L'hébreu à afficher. Quand la licence de l'édition ne permet pas d'en reprendre
+   * la vocalisation, le fichier livre déjà `he` sans nikkoud : rien à retirer ici.
    */
-  hebreu(chizuk, item) {
-    const ok = chizuk._meta?.editions?.[item.edition]?.nikkoud_ok ?? false;
-    if (ok) return item.he;
-    const sans = item.he_sans_nikkoud;
-    return typeof sans === 'string' && sans.trim() !== '' ? sans : item.he;
-  },
+  hebreu: (chizuk, item) => item.he,
 
   /**
    * La traduction dans la langue de l'interface ; en hébreu, aucune — le

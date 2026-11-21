@@ -111,6 +111,16 @@ export function verifier(plan) {
   return null;
 }
 
+/**
+ * Une durée que la distance ne permet pas (Vol.invraisemblable, FVOL-12) : plus de 1 100 km/h de
+ * moyenne, ou plus de deux fois la durée estimée (820 km/h + 30 min) plus 2 h. Avertit, sans bloquer.
+ */
+export function invraisemblable(plan) {
+  const km = distanceKm(plan.depart.latitude, plan.depart.longitude, plan.arrivee.latitude, plan.arrivee.longitude);
+  const heures = (+plan.atterrissage - +plan.decollage) / H;
+  return km > 1100 * heures || heures > 2 * (km / 820 + 0.5) + 2;
+}
+
 const rad = (d) => (d * Math.PI) / 180;
 const deg = (r) => (r * 180) / Math.PI;
 const vecteur = (lat, lon) => [Math.cos(rad(lat)) * Math.cos(rad(lon)), Math.cos(rad(lat)) * Math.sin(rad(lon)), Math.sin(rad(lat))];
@@ -186,7 +196,7 @@ function occurrences(p, signaler = () => {}) {
   for (const d of [decale(iso, -1), iso, decale(iso, 1)]) {
     for (const z of jourEn(lieu, d)) {
       if (z.statut === 'ok') (parCle[z.cle] ??= []).push(+z.instant);
-      else signaler(z.statut === 'absent' ? 'absent' : 'erreur');
+      else signaler(z.statut === 'absent' ? 'absent' : 'erreur', z.cle);
     }
   }
   return parCle;
@@ -228,6 +238,7 @@ function racine(plan, cle, a, oa, b, ob) {
 
 function calculerSeul(plan) {
   const reserves = new Set();
+  const absents = new Set();
   const dec = +plan.decollage;
   const att = +plan.atterrissage;
   const instants = [];
@@ -238,7 +249,11 @@ function calculerSeul(plan) {
     const p = position(plan, t);
     const enVol = t >= dec && t <= att;
     if (enVol && Math.abs(p.latitude) > LATITUDE_HAUTE) reserves.add('haute_latitude');
-    return { t, p, occ: occurrences(p, (r) => { if (enVol) reserves.add(r); }) };
+    return { t, p, occ: occurrences(p, (r, cle) => {
+      if (!enVol) return;
+      reserves.add(r);
+      if (r === 'absent') absents.add(cle);
+    }) };
   });
   const trouves = [];
   for (let i = 0; i < echantillons.length - 1; i++) {
@@ -266,7 +281,9 @@ function calculerSeul(plan) {
   trouves.sort((x, y) => x.instant - y.instant);
   const evenements = [];
   for (const e of trouves) if (!evenements.some((x) => x.cle === e.cle && Math.abs(x.instant - e.instant) < MIN)) evenements.push(e);
-  return { plan, evenements, reserves, lignesDate: lignesDate(plan, echantillons), fiabilite: !releveUtilisable(plan) ? 'route_prevue' : plan.sourceReleve === 'direct' ? 'releve_direct' : 'releve_gps' };
+  return { plan, evenements, reserves, lignesDate: lignesDate(plan, echantillons), fiabilite: !releveUtilisable(plan) ? 'route_prevue' : plan.sourceReleve === 'direct' ? 'releve_direct' : 'releve_gps',
+    // Les zmanim absents en un point du vol, dans l'ordre du profil (Vol.Calcul.absents, FVOL-11).
+    absents: CLES.filter((cle) => absents.has(cle)) };
 }
 
 /** Le passage du méridien de 180° en vol, et la date locale (fuseau nautique) de part et d'autre. */
@@ -304,18 +321,26 @@ export function calculer(plan) {
 
 /**
  * La prière du moment et sa limite : ZmanimWidget.prochaine, ligne pour ligne.
- * horaires : { alot, szt_gra, chkia, chatsot_layla } en Date ou null.
+ * horaires : { alot, szt_gra, minha_gedola, chkia, chatsot_layla } en Date ou null.
+ * Rend [prière, limite, début]. Début null : la prière est ouverte, jusqu'à la limite. Début
+ * non null : aucune prière n'est ouverte, la prochaine commence à ce moment — de la fin de
+ * Cha'harit à min'ha guedola, Min'ha est annoncée, pas affichée comme ouverte (13/11, FVOL-05).
  */
 export function prochaine(horaires, maintenant) {
   const alot = horaires.alot;
   if (alot && +maintenant < +alot) {
     const veille = horaires.chatsot_layla ? new Date(+horaires.chatsot_layla - 24 * H) : null;
-    return ['arvit', veille && +maintenant < +veille ? veille : null];
+    return ['arvit', veille && +maintenant < +veille ? veille : null, null];
   }
-  for (const [priere, limite] of [['chaharit', horaires.szt_gra], ['minha', horaires.chkia], ['arvit', horaires.chatsot_layla]]) {
-    if (limite && +maintenant < +limite) return [priere, limite];
+  if (horaires.szt_gra && +maintenant < +horaires.szt_gra) return ['chaharit', horaires.szt_gra, null];
+  const chkia = horaires.chkia ?? null;
+  const guedola = horaires.minha_gedola;
+  // Une min'ha guedola d'après la chki'a est celle du lendemain (route sans repère d'aube) : Min'ha est ouverte.
+  if (guedola && +maintenant < +guedola && (!chkia || +guedola < +chkia)) return ['minha', chkia, guedola];
+  for (const [priere, limite] of [['minha', chkia], ['arvit', horaires.chatsot_layla]]) {
+    if (limite && +maintenant < +limite) return [priere, limite, null];
   }
-  return ['arvit', null];
+  return ['arvit', null, null];
 }
 
 /**
@@ -328,10 +353,10 @@ export function horaires(calcul, maintenant) {
   const alot = ev.filter((e) => aube.includes(e.cle) && +e.instant <= +maintenant).at(-1)?.instant ?? null;
   const apres = alot ?? maintenant;
   const suivant = (cle) => ev.find((e) => e.cle === cle && +e.instant > +apres)?.instant ?? null;
-  return { alot, szt_gra: suivant('szt_gra'), chkia: suivant('chkia'), chatsot_layla: suivant('chatsot_layla') };
+  return { alot, szt_gra: suivant('szt_gra'), minha_gedola: suivant('minha_gedola'), chkia: suivant('chkia'), chatsot_layla: suivant('chatsot_layla') };
 }
 
-/** La prière du moment en vol et sa limite ; null loin du vol (la fenêtre ne couvre plus). */
+/** La prière du moment en vol, sa limite et son début (prochaine) ; null loin du vol (la fenêtre ne couvre plus). */
 export function priere(calcul, maintenant) {
   if (+maintenant < +calcul.plan.decollage - COUVERT || +maintenant > +calcul.plan.atterrissage + COUVERT) return null;
   return prochaine(horaires(calcul, maintenant), maintenant);
@@ -342,27 +367,47 @@ export function priere(calcul, maintenant) {
  * ligne) : la règle de JourAffiche.horaires appliquée aux chki'a et tsét de la
  * route. Le jour civil est celui du point sous l'avion (fuseau nautique).
  */
+/** Une ligne de date franchie pendant le Omer (VolCalendrier.ligneDateOmer, audit du 16/11). */
+export const ligneDateOmer = (calcul, enIsrael) => calcul.lignesDate.some((l) =>
+  [l.avant, l.apres, decale(l.avant, 1), decale(l.apres, 1)].some((iso) => jourJuif(iso, enIsrael).omer > 0));
+
+/** Après la chki'a e, le prochain repère de la nuit ou du matin n'est pas un tsét (VolCalendrier.tsetManque, audit du 16/11). */
+export function tsetManque(calcul, e) {
+  const suivant = calcul.evenements.find((x) => +x.instant > +e.instant && ['tset', 'alot', 'misheyakir', 'netz', 'chkia'].includes(x.cle));
+  return suivant?.cle !== 'tset';
+}
+
 export function jalons(calcul, enIsrael, minutes) {
   const sortie = [];
-  for (const e of enVol(calcul)) {
+  const vol = enVol(calcul);
+  for (const e of vol) {
     if (e.cle !== 'chkia' && e.cle !== 'tset') continue;
     const iso = isoDans(e.instant, fuseauNautique(e.longitude));
     const aujourdhui = jourJuif(iso, enIsrael);
     const demain = jourJuif(decale(iso, 1), enIsrael);
-    const jalon = (type, j, allumage = null, omer = 0) => ({
-      type, instant: e.instant, date: j.date, chabbat: new Date(`${j.date}T12:00:00Z`).getUTCDay() === 6, fetes: j.fetes, omer, allumage,
-      latitude: e.latitude, longitude: e.longitude,
+    const jalon = (type, j, allumage = null, omer = 0, ev = e, repli = false) => ({
+      type, instant: ev.instant, date: j.date, chabbat: new Date(`${j.date}T12:00:00Z`).getUTCDay() === 6, fetes: j.fetes, omer, allumage,
+      latitude: ev.latitude, longitude: ev.longitude, repli,
     });
     // Fête un vendredi (FCALENDRIER-01) : Chabbat entre à la chki'a, allumage avant elle.
     const vendredi = new Date(`${iso}T12:00:00Z`).getUTCDay() === 5;
+    // Vol polaire sans tsét (audit du 16/11) : Omer à la chki'a ; sortie et enchaînement à Rabbénou Tam.
+    const repli = e.cle === 'chkia' && tsetManque(calcul, e);
+    const rt = repli ? vol.find((x) => x.cle === 'tset_rt' && +x.instant > +e.instant) ?? null : null;
     if (e.cle === 'chkia' && demain.chome && (!aujourdhui.chome || vendredi)) sortie.push(jalon('entree', demain, new Date(+e.instant - minutes * MIN)));
     if (e.cle === 'tset') {
       if (aujourdhui.chome && !demain.chome) sortie.push(jalon('sortie', aujourdhui));
       if (aujourdhui.chome && demain.chome && !vendredi) sortie.push(jalon('enchainement', demain));
       if (demain.omer > 0) sortie.push(jalon('omer', demain, null, demain.omer));
     }
+    if (repli) {
+      if (rt && aujourdhui.chome && !demain.chome) sortie.push(jalon('sortie', aujourdhui, null, 0, rt, true));
+      if (rt && aujourdhui.chome && demain.chome && !vendredi) sortie.push(jalon('enchainement', demain, null, 0, rt, true));
+      if (demain.omer > 0) sortie.push(jalon('omer', demain, null, demain.omer, e, true));
+    }
   }
-  return sortie;
+  // Stable : à instant égal, l'ordre de la route (VolCalendrier.jalons).
+  return sortie.map((j, i) => [j, i]).sort((a, b) => +a[0].instant - +b[0].instant || a[1] - b[1]).map(([j]) => j);
 }
 
 // --- Le suivi en direct (SuiviVol.kt, 28/10) : option désactivée par défaut ---------------
@@ -390,13 +435,15 @@ export function memeIndicatif(a, b) {
  */
 export const Raison = {
   HORS_LIGNE: 'hors_ligne', QUOTA: 'quota', ILLISIBLE: 'illisible', POSITION_INVALIDE: 'position_invalide',
-  RELAIS_ABSENT: 'relais_absent', SERVICE: 'service',
+  RELAIS_ABSENT: 'relais_absent', SERVICE: 'service', TROP_DE_DEMANDES: 'trop_de_demandes',
   serveur: (code) => (code === 429 ? 'quota' : `serveur_${code}`),
   /** Le code HTTP d'une raison serveur(), sinon null. */
   codeServeur: (raison) => (/^serveur_\d+$/.test(raison) ? +raison.slice(8) : null),
-  /** Le message du relais (tools/relais_vol) : « opensky 429 », « opensky injoignable »… */
+  /** Le message du relais (tools/relais_vol) : « opensky 429 » (quota du jour), « relais 429 » (débit), « opensky injoignable »… */
   duRelais: (message) => {
-    const m = /^(?:opensky|relais) (\d+)$/.exec(String(message).trim());
+    const texte = String(message).trim();
+    if (texte === 'relais 429') return 'trop_de_demandes';
+    const m = /^opensky (\d+)$/.exec(texte);
     return m ? Raison.serveur(+m[1]) : 'service';
   },
 };
@@ -423,9 +470,14 @@ export async function positionEnDirect(relais, indicatif, estime, chercher = fet
   if (!relais || !relais.startsWith('https://')) return { statut: 'erreur', raison: Raison.RELAIS_ABSENT };
   try {
     const r = await chercher(adresseRelais(relais, indicatif, estime), { credentials: 'omit', redirect: 'error' });
-    if (r.status >= 500) return { statut: 'erreur', raison: Raison.serveur(r.status) };
     let o;
-    try { o = await r.json(); } catch { return { statut: 'erreur', raison: Raison.ILLISIBLE }; }
+    try { o = await r.json(); } catch { o = undefined; }
+    // Le corps se lit aussi en 5xx (revue du 15/11) : « opensky 429 » y dit le quota du jour épuisé.
+    if (r.status >= 500) {
+      const lu = o?.erreur ? lireReponse(o, maintenant) : null;
+      return lu && lu.raison !== Raison.ILLISIBLE ? lu : { statut: 'erreur', raison: Raison.serveur(r.status) };
+    }
+    if (o === undefined) return { statut: 'erreur', raison: Raison.ILLISIBLE };
     return lireReponse(o, maintenant);
   } catch {
     return { statut: 'erreur', raison: Raison.HORS_LIGNE };
@@ -571,13 +623,35 @@ function prochaineDate(aujourdhui, mois, jour) {
   return d < plusJours(aujourdhui, -7) ? iso(an + 1, mois, jour) : d;
 }
 
-/** Les heures, dans l'ordre ; celles de l'embarquement ou de la porte sont écartées (SaisieVol.heures). */
-export function heuresPhrase(leger) {
+/** Une date sans heure (code-barres, « demain ») : l'ancien vol n'est pas repris, l'heure se donne (SaisieVol.dateSansHeure, FVOL-03). */
+export const dateSansHeure = (p) => !!p.date && !p.heureDepart;
+
+/** Le vol ne se calcule seul que si tout vient du texte : ni arrivée estimée, ni jour repris de l'ancien vol (SaisieVol.calculAutomatique). */
+export const calculAutomatique = (p, arriveeEstimee) => !arriveeEstimee && !!p.date;
+
+/**
+ * Les heures, dans l'ordre (SaisieVol.heures). Sont écartées (FVOL-04) : celles de l'embarquement ou
+ * de la porte, sauf si « départ » est plus près que « gate » ; les durées (« Durée 4h25 », « 4h 25m ») ;
+ * les chiffres du numéro de vol déjà lu ; et, dès qu'une forme « HH:MM » figure dans le texte, les
+ * formes « 4h25 », qui sont alors des durées.
+ */
+export function heuresPhrase(leger, numero = null) {
   const r = /(?<![0-9])([01]?[0-9]|2[0-3])(?:\s?h\s?([0-5][0-9])?|:([0-5][0-9])(?:\s?(am|pm))?|\s?(am|pm))(?![0-9])|(?<![a-zא-ת])(?:בשעה|a|à|at|vers)\s([01]?[0-9]|2[0-3])(?![0-9/:.]|\s?h|\s?am|\s?pm)/g;
+  const texte = numero
+    ? leger.replace(new RegExp(`(?<![a-z0-9])${[...numero.toLowerCase()].map((c) => c.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('\\s?')}(?![0-9])`, 'g'), ' ')
+    : leger;
+  const avecDeuxPoints = /(?<![0-9])[0-9]{1,2}:[0-5][0-9]/.test(texte);
+  const porte = /boarding|embarquement|gate|porte|עלייה|שער|fermeture|closes/g;
+  const depart = /depart[a-z]*|dep(?![a-z])|decollage|takeoff|המראה/g;
+  const duree = /(?:duree|duration|flight time|temps de vol|משך|זמן טיסה)\s*[:\-–]?\s*$/;
   const res = [];
-  for (const m of leger.matchAll(r)) {
-    const avant = leger.slice(Math.max(0, m.index - 24), m.index);
-    if (/boarding|embarquement|gate|porte|עלייה|שער|fermeture|closes/.test(avant)) continue;
+  for (const m of texte.matchAll(r)) {
+    const avant = texte.slice(Math.max(0, m.index - 24), m.index);
+    if (duree.test(avant)) continue;
+    if (/^\s?m(?:in|n)?(?![a-z])/.test(texte.slice(m.index + m[0].length))) continue;
+    if (avecDeuxPoints && !m[3] && !m[4] && !m[5] && !m[6]) continue;
+    const derniereP = [...avant.matchAll(porte)].at(-1);
+    if (derniereP && ([...avant.matchAll(depart)].at(-1)?.index ?? -1) < derniereP.index) continue;
     if (m[6]) { res.push(`${pad(Number(m[6]))}:00`); continue; }
     let h = Number(m[1]);
     const min = Number(m[2] || m[3] || 0);
@@ -603,6 +677,11 @@ export function lirePhrase(texte, liste, aujourdhui) {
   for (const m of pl.matchAll(reNum)) {
     const code = m[1];
     if (['a', 'le', 'la', 'de', 'du', 'au', 'et', 'on', 'at', 'the'].includes(code) || MOTS.has(code)) continue;
+    // « 4h 25m », « 5h45 » sont des durées ou des heures, pas des numéros (FVOL-04) : seul « 6H » (Israir)
+    // est un code « chiffre + h », suivi d'un vrai numéro, pas de deux chiffres de minutes.
+    if (/^[0-9]h$/.test(code) && (code !== '6h' || (m[2].length === 2 && Number(m[2]) < 60 && !m[3]))) continue;
+    // « gate B12 », « porte A3 » : la porte, pas le vol.
+    if (/(?:gate|porte|door|terminal|שער)\s*$/.test(pl.slice(0, m.index))) continue;
     const n = `${code}${m[2]}${m[3]}`.toUpperCase();
     if (normaliserNumero(n)) { numero = n; break; }
   }
@@ -673,7 +752,7 @@ export function lirePhrase(texte, liste, aujourdhui) {
     dates.push([i, plusJours(aujourdhui, (j - jourIso(aujourdhui) + 7) % 7)]);
   });
   const tri = [...new Set(dates.sort((x, y) => x[0] - y[0]).map((x) => x[1]))];
-  const heures = heuresPhrase(leger);
+  const heures = heuresPhrase(leger, numero);
   return {
     numero, compagnie, depart: dep?.a.iata ?? null, arrivee: arr?.a.iata ?? null,
     date: tri[0] ?? null, dateArrivee: tri[1] ?? null, heureDepart: heures[0] ?? null, heureArrivee: heures[1] ?? null,

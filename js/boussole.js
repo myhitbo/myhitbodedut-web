@@ -43,6 +43,12 @@ export function ecart(cible, cap) {
 }
 
 export const face = (e) => Math.abs(e) <= TOLERANCE;
+/**
+ * Les deux méthodes diffèrent ici de plus de 20° (DirectionJerusalem.conseilMinyan, audit du 16/11) :
+ * au minyan, prier dans la direction de la communauté et ne tourner que le visage (Michna Beroura 94:10).
+ */
+export const ECART_MINYAN = 20;
+export const conseilMinyan = (lat, lon) => Math.abs(ecart(grandCercle(lat, lon), carte(lat, lon))) > ECART_MINYAN;
 /** En degrés entiers, de 0 à 359. */
 export const degres = (d) => Math.round(norm(d)) % 360;
 /** Le point cardinal le plus proche, de 0 (N) à 7 (NO). */
