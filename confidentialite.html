@@ -1,0 +1,262 @@
+<!doctype html>
+<!--
+  Règles de confidentialité de l'application Android (31/10, Google Play,
+  PUBLICATION_PLAY_STORE.md § 6.1). Page statique, sans script ni ressource
+  extérieure, copiée telle quelle dans le site par build.mjs et ouverte depuis
+  les réglages de l'application (#fr, #en, #he).
+
+  Chaque phrase décrit le code : Store.kt (stockage), res/xml/backup_rules.xml
+  et data_extraction_rules.xml (sauvegarde), SuiviVol.kt (OpenSky), RouteVol.kt
+  (adsbdb), ChoixLieu.kt et VolActivity.kt (localisation, services en ligne,
+  billet), GateService.kt et Divulgation.kt (barrière), Dedicace.kt. Toute
+  évolution de ces fichiers se reporte ici, dans les trois langues, avec la date.
+
+  14/11 (audit du 12/11, TWEBCONF-01 à 06) : l'édition Google Play n'a pas de
+  suivi en direct (BuildConfig.OPENSKY_DIRECT = false, aucun relais) ; il n'en
+  sort que le numéro de vol envoyé à adsbdb. Le jour où un relais est mis en
+  ligne (tools/relais_vol), le développeur reçoit l'indicatif et la position
+  estimée : « En bref » et « Les vols » sont à réécrire avant d'envoyer l'AAB
+  (texte prêt : PUBLICATION_PLAY_STORE.md § 3.1).
+
+  14/11 (examen du 14/11, constat 3 ; TWEBCONF-05) : « Position approximative » dit la
+  relecture sans geste (ChoixLieu.rafraichir, rafraichirSiBesoin, reprendreEnFond), l'usage
+  de la position exacte si elle a été accordée pour le vol, et l'arrondi de la position
+  gardée (PositionSol.arrondie).
+
+  15/11 (TWEBCONF-10, 11) : date portée au jour ; historique : 04/11 adresse de contact et dédicace,
+  14/11 position et services en ligne. Droits et rapports Play ajoutés ; 16/11 : responsable = l’association
+  (compte Play organisation) ; pays : France (16/11).
+
+  Éditeur : MyHitbodedut Team, nom public de l’association HACHIVEINOU LÉTORATEKHA (compte Play « organisation », 16/11) ; contact : myhitbodedut26@gmail.com (02/11), le même que sur la fiche Play.
+-->
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+  <meta name="referrer" content="no-referrer">
+  <meta name="description" content="MyHitbodedut privacy policy · Règles de confidentialité · מדיניות פרטיות">
+  <title>MyHitbodedut — Règles de confidentialité · Privacy policy · מדיניות פרטיות</title>
+  <style>
+    :root { color-scheme: light dark; --encre: #1b2a24; --doux: #4d5d56; --fond: #f4f7f2; --trait: #cfd9d2; --lien: #1f6b4f; }
+    @media (prefers-color-scheme: dark) { :root { --encre: #e6eee9; --doux: #a9b8b0; --fond: #101a16; --trait: #2c3b34; --lien: #7fd1ad; } }
+    body { margin: 0; background: var(--fond); color: var(--encre); font: 16px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; }
+    main { max-width: 46rem; margin: 0 auto; padding: 1.5rem 1rem 3rem; }
+    nav { display: flex; gap: 1rem; flex-wrap: wrap; padding-bottom: 1rem; border-bottom: 1px solid var(--trait); }
+    a { color: var(--lien); }
+    section { padding-top: 1.5rem; border-bottom: 1px solid var(--trait); padding-bottom: 1.5rem; }
+    h1 { font-size: 1.5rem; line-height: 1.25; margin: 0 0 .25rem; }
+    h2 { font-size: 1.1rem; margin: 1.5rem 0 .5rem; }
+    p, li { overflow-wrap: anywhere; }
+    .date { color: var(--doux); margin-top: 0; }
+    [dir="rtl"] { text-align: right; }
+  </style>
+</head>
+<body>
+<main>
+  <nav aria-label="Langue · Language · שפה">
+    <a href="#fr" hreflang="fr" lang="fr">Français</a>
+    <a href="#en" hreflang="en" lang="en">English</a>
+    <a href="#he" hreflang="he" lang="he">עברית</a>
+  </nav>
+
+  <!-- ===================================================================== -->
+  <section id="fr" lang="fr">
+    <h1>MyHitbodedut — Règles de confidentialité</h1>
+    <p class="date">Mise à jour : 16 novembre 2026. S’applique à l’application Android MyHitbodedut (com.myhitbodedut ; édition légère : com.myhitbodedut.light), publiée sous le nom MyHitbodedut Team par l’association HACHIVEINOU LÉTORATEKHA, association de droit français (France) (ci-après « le développeur »). L’édition publiée sur Google Play est l’édition complète. La section « Version web » vaut pour le site.</p>
+
+    <h2>En bref</h2>
+    <ul>
+      <li>Ni compte, ni publicité, ni outil d’analyse d’audience. L’application n’envoie aucun rapport d’erreur ; si vous avez accepté dans Android le partage des diagnostics, Google peut transmettre au développeur des rapports de plantage anonymes.</li>
+      <li>Le développeur ne reçoit aucune de vos données, sauf les e-mails que vous choisissez de lui écrire (question, dédicace) : il n’a pas de serveur pour cette application.</li>
+      <li>Tout ce que vous saisissez reste sur votre téléphone, sauf ce que vous choisissez vous-même d’exporter ou de partager, la copie des réglages que fait la sauvegarde d’Android si vous l’avez activée, et ce que les services de vol décrits plus bas envoient quand vous les sollicitez (dans l’édition publiée sur Google Play : le seul numéro de vol).</li>
+    </ul>
+
+    <h2>Ce qui est gardé sur le téléphone</h2>
+    <p>L’application enregistre ses données dans son espace privé sur l’appareil (les préférences privées d’Android, « SharedPreferences »), en deux fichiers :</p>
+    <ul>
+      <li><strong>les réglages</strong> : horaires, rappels, apparence, langue, la façon de vous appeler (Tsadik ou Tsadeket), le lieu choisi pour les zmanim (une ville de la liste, ou les coordonnées de « Ma position »), les détails d’un vol saisi et son relevé GPS, les jours de pause, les paliers et trophées déjà affichés, vos lectures (favoris, textes de ’hizouk gardés, marque-pages, dernière lecture, jours où le Tikoun a été dit), le nom et l’emplacement des morceaux ajoutés, et, dans l’édition complète, la liste des applications choisies pour la barrière du matin ;</li>
+      <li><strong>le journal</strong> : vos hitbodedout (date, durée, sujets), vos notes, l’humeur avant et après, la gratitude, « À travailler », et votre prénom.</li>
+    </ul>
+    <p>Ils sont effacés du téléphone quand vous désinstallez l’application, ou par Réglages → « Réinitialiser l’application ». Désinstaller l’application n’efface pas la copie des réglages gardée par la sauvegarde Android sur votre compte Google : elle revient à la réinstallation. Pour l’effacer, supprimez la sauvegarde de ce téléphone dans votre compte Google (Google One ou Google Drive, rubrique « Sauvegardes »).</p>
+
+    <h2>Sauvegarde et transfert d’appareil</h2>
+    <ul>
+      <li><strong>Sauvegarde dans le nuage d’Android</strong> (si vous l’avez activée dans Android, sur votre compte Google) : seul le fichier des réglages y est inclus, avec tout ce que la liste ci-dessus y range, dont le lieu des zmanim et vos lectures. <strong>Le journal, les notes et le prénom en sont exclus.</strong> Cette sauvegarde est faite par Android pour votre compte ; le développeur n’y a pas accès.</li>
+      <li><strong>Transfert d’appareil</strong> (Android 12 et plus ; de l’ancien téléphone au nouveau, par câble ou en local) : les réglages <strong>et</strong> le journal, notes et prénom compris, pour ne pas perdre votre historique en changeant de téléphone. Sous Android 8 à 11, seuls les réglages sont transférés : exportez votre journal avant de changer de téléphone.</li>
+    </ul>
+
+    <h2>Export, import et partage</h2>
+    <p>Seulement si vous le demandez : Réglages → « Exporter » écrit un fichier JSON à l’endroit que vous choisissez. Il contient le journal (avec les humeurs, les gratitudes et les choses à travailler), les notes, le prénom, le journal du Tikoun, les favoris, les textes de ’hizouk gardés, les marque-pages, les réglages, les jours exemptés et la liste des applications de la barrière ; il ne contient pas la position. Si vous donnez un mot de passe, le fichier est chiffré sur l’appareil (AES-256-GCM) et illisible sans lui ; sinon il reste en clair. L’application ne l’envoie nulle part ; ce que vous en faites ensuite vous appartient. « Importer » relit un tel fichier. De même, partager une journée en image passe par le menu de partage d’Android, à votre initiative.</p>
+
+    <h2>Localisation</h2>
+    <ul>
+      <li><strong>Position approximative</strong> : l’autorisation est demandée seulement si vous choisissez « Ma position » au lieu d’une ville. Tant que « Ma position » reste choisie, l’application relit la position quand vous ouvrez l’accueil (au plus toutes les six heures), les zmanim ou la boussole, et après un changement de fuseau horaire, pour que les horaires suivent l’endroit où vous êtes. Si vous avez aussi accordé la position exacte pour le GPS en vol, elle peut servir alors ; dans tous les cas, la position gardée est arrondie au centième de degré (moins d’un kilomètre). Elle sert, sur l’appareil, à calculer les zmanim et la direction de Jérusalem. L’application ne l’envoie jamais ; elle est gardée dans les réglages (voir la sauvegarde ci-dessus).</li>
+      <li><strong>Position exacte</strong> : demandée seulement dans l’écran « Zmanim en vol », quand vous touchez « Position réelle (GPS) ». Un relevé GPS recale la route du vol sur l’appareil ; il est gardé avec les détails du vol. L’édition publiée sur Google Play ne l’envoie jamais.</li>
+    </ul>
+
+    <h2>La barrière du matin (édition complète)</h2>
+    <p>Si vous l’activez, la barrière utilise deux accès spéciaux d’Android, chacun expliqué avant d’ouvrir les réglages d’Android :</p>
+    <ul>
+      <li><strong>Accès aux données d’utilisation</strong> : pour savoir quelle application est affichée au premier plan, pendant la plage horaire que vous avez fixée et tant que la pratique du jour n’est pas faite. Elle le vérifie aussi pendant toute hitbodedout en cours, à n’importe quelle heure. Seule la dernière application ouverte est retenue, en mémoire ; aucun historique n’est gardé ni envoyé.</li>
+      <li><strong>Affichage par-dessus les autres applications</strong> : pour afficher l’écran « Je suis avec Hachem » devant les applications que vous avez choisies. Il s’affiche aussi devant ces applications pendant toute hitbodedout en cours, à n’importe quelle heure, jusqu’à ce qu’elle se termine.</li>
+    </ul>
+    <p>Vous coupez la barrière à tout moment : Réglages → interrupteur « Je suis avec Hachem ». Vous pouvez aussi retirer ces accès dans les réglages d’Android.</p>
+
+    <h2>Les vols (édition complète seulement)</h2>
+    <p>L’édition légère n’a pas accès à Internet. L’édition complète ne s’y connecte que par les services en ligne de l’écran « Zmanim en vol », derrière un interrupteur <strong>désactivé par défaut</strong> : tant qu’il est éteint, rien ne quitte le téléphone. Toute connexion se fait en HTTPS, et à votre demande. <strong>L’édition publiée sur Google Play n’a qu’un service en ligne, la route d’un numéro de vol</strong> : elle n’a pas de suivi en direct et n’interroge jamais OpenSky Network.</p>
+    <ul>
+      <li><strong>Route d’un numéro de vol, via adsbdb</strong> (api.adsbdb.com) : quand vous touchez la loupe à côté du numéro de vol (ou la touche Rechercher du clavier), ou quand vous remplissez le vol (« Remplir le vol », billet importé) avec un numéro sans son trajet. Si les services en ligne sont éteints, l’application demande d’abord votre accord ; l’accepter les allume, et ils restent allumés jusqu’à ce que vous éteigniez l’interrupteur (sous les résultats du vol, « Préciser la position »). Le téléphone envoie le numéro de vol saisi (et, s’il le faut, le code de la compagnie qu’il contient), avec les en-têtes techniques de toute requête, dont le modèle du téléphone et la version d’Android.</li>
+      <li><strong>Suivi en direct, via OpenSky Network</strong> (opensky-network.org), <strong>seulement dans l’édition complète distribuée hors de Google Play</strong> : lancé par un bouton, services en ligne allumés. Le téléphone envoie un carré de coordonnées d’environ 10 degrés de côté autour de la position estimée de l’avion, chaque coordonnée arrondie au dixième de degré, avec les mêmes en-têtes techniques. Le numéro de vol n’est pas envoyé : l’avion est cherché dans la réponse, sur le téléphone.</li>
+      <li><strong>Billet</strong> : un billet importé (PDF ou photo) ou un texte collé est lu sur le téléphone, sans connexion ; seuls le numéro de vol, les aéroports, la date et les heures sont retenus. Le nom du passager et le numéro de réservation ne sont pas gardés.</li>
+    </ul>
+    <p>Comme pour toute connexion à Internet, ces services voient l’adresse IP de votre connexion. Leur propre politique de confidentialité s’applique à ce qu’ils reçoivent. Les liens vers des sites (Sefaria, par exemple) s’ouvrent dans votre navigateur, seulement si vous les touchez.</p>
+
+    <h2>Version web</h2>
+    <p>Version web (iPhone et navigateur) : le site, et cette page avec lui, sont hébergés par Cloudflare (Cloudflare Pages), qui voit l’adresse IP de votre connexion comme tout hébergeur et tient ses propres journaux techniques ; le site ne contient ni outil d’analyse d’audience ni traceur. Ce que vous saisissez reste dans ce navigateur, sur cet appareil, avec les morceaux que vous ajoutez ; le navigateur peut l’effacer si le site n’est pas ajouté à l’écran d’accueil : exportez régulièrement. « Ma position » utilise la position précise donnée par le navigateur, pour le calcul sur l’appareil seulement. Seule connexion extérieure : api.adsbdb.com, pour la route d’un numéro de vol, après votre accord.</p>
+
+    <h2>Enfants</h2>
+    <p>L’application s’adresse aux adultes et ne collecte sciemment aucune donnée d’enfant.</p>
+
+    <h2>Responsable et droits</h2>
+    <p>Ces règles sont publiées par MyHitbodedut Team, c’est-à-dire l’association HACHIVEINOU LÉTORATEKHA, responsable du traitement des données qu’elle reçoit. Les données de l’application sont sur votre appareil : vous les consultez, les exportez et les effacez vous-même dans les réglages. Pour les e-mails que vous nous écrivez, demandez-en à tout moment la copie ou la suppression à l’adresse ci-dessous ; dans l’Union européenne, vous pouvez aussi saisir votre autorité de protection des données (en France : la CNIL).</p>
+
+    <h2>Modifications et contact</h2>
+    <p>Toute modification de ces règles sera publiée sur cette page, avec sa date. Pour toute question sur ces règles ou sur vos données, écrivez à MyHitbodedut Team : <a href="mailto:myhitbodedut26@gmail.com">myhitbodedut26@gmail.com</a>.</p>
+    <p>Dédicace : si vous demandez une dédicace, c’est vous qui envoyez, depuis votre propre messagerie, un e-mail à MyHitbodedut Team. L’équipe reçoit alors votre adresse e-mail, le nom indiqué, l’intention choisie (guérison, élévation de l’âme, zivoug…) et votre message. Ces données servent seulement à traiter la demande ; elles sont gardées le temps de la traiter, puis effacées, et vous pouvez en demander l’effacement à tout moment à la même adresse. Pour une personne vivante, n’indiquez son nom qu’avec son accord. L’application elle-même n’envoie rien et ne garde rien de cette demande.</p>
+  </section>
+
+  <!-- ===================================================================== -->
+  <section id="en" lang="en">
+    <h1>MyHitbodedut — Privacy policy</h1>
+    <p class="date">Last updated: 16 November 2026. Applies to the MyHitbodedut Android app (com.myhitbodedut; light edition: com.myhitbodedut.light), published under the name MyHitbodedut Team by the association HACHIVEINOU LÉTORATEKHA, a French association (France) (“the developer”). The edition published on Google Play is the full edition. The “Web version” section applies to the website.</p>
+
+    <h2>In short</h2>
+    <ul>
+      <li>No account, no ads, no audience analytics. The app sends no error reports itself; if you agreed in Android to share diagnostics, Google may pass anonymous crash reports on to the developer.</li>
+      <li>The developer receives none of your data, except the e-mails you choose to write to them (a question, a dedication): there is no server for this app.</li>
+      <li>Everything you enter stays on your phone, except what you yourself choose to export or share, the copy of the settings made by Android backup if you turned it on, and what the flight services described below send when you ask for them (in the edition published on Google Play: only the flight number).</li>
+    </ul>
+
+    <h2>What is kept on the phone</h2>
+    <p>The app stores its data in its private space on the device (Android private preferences, “SharedPreferences”), in two files:</p>
+    <ul>
+      <li><strong>settings</strong>: times, reminders, appearance, language, how the app addresses you (Tsadik or Tsadeket), the place chosen for the zmanim (a city from the list, or the coordinates of “My location”), the details of a flight you entered and its GPS reading, rest days, the milestones and trophies already shown, your reading (favorites, saved chizuk texts, bookmarks, the last text read, the days the Tikkun was said), the names and locations of the tracks you added, and, in the full edition, the list of apps chosen for the morning gate;</li>
+      <li><strong>the journal</strong>: your hitbodedut (date, length, subjects), your notes, your mood before and after, the gratitude, “To work on”, and your first name.</li>
+    </ul>
+    <p>They are erased from the phone when you uninstall the app, or with Settings → “Reset the app”. Uninstalling the app does not erase the copy of the settings kept by Android backup on your Google account: it comes back when you reinstall. To erase it, delete this phone’s backup from your Google account (Google One or Google Drive, “Backups”).</p>
+
+    <h2>Backup and device transfer</h2>
+    <ul>
+      <li><strong>Android cloud backup</strong> (if you turned it on in Android, on your Google account): only the settings file is included, with everything the list above puts in it, including the zmanim location and your reading. <strong>The journal, notes and first name are excluded.</strong> This backup is made by Android for your account; the developer has no access to it.</li>
+      <li><strong>Device transfer</strong> (Android 12 and later; from the old phone to the new one, by cable or locally): the settings <strong>and</strong> the journal, notes and first name included, so that you do not lose your history when changing phones. On Android 8 to 11, only the settings are transferred: export your journal before changing phones.</li>
+    </ul>
+
+    <h2>Export, import and sharing</h2>
+    <p>Only if you ask: Settings → “Export” writes a JSON file where you choose. It contains the journal (with moods, gratitudes and things to work on), notes, first name, the Tikkun log, favorites, saved chizuk texts, bookmarks, settings, exempt days and the list of gate apps; it does not contain your location. If you give a password, the file is encrypted on the device (AES-256-GCM) and cannot be read without it; otherwise it stays in plain text. The app sends it nowhere; what you do with it afterwards is up to you. “Import” reads such a file back. Likewise, sharing a day as an image goes through Android’s share menu, at your initiative.</p>
+
+    <h2>Location</h2>
+    <ul>
+      <li><strong>Approximate location</strong>: the permission is requested only if you choose “My location” instead of a city. As long as “My location” stays selected, the app reads the location again when you open the home screen (at most every six hours), the zmanim or the compass, and after a time-zone change, so that the times follow where you are. If you also granted precise location for in-flight GPS, it may then be used; either way, the position kept is rounded to a hundredth of a degree (less than a kilometre). It is used, on the device, to compute the zmanim and the direction of Jerusalem. The app never sends it; it is kept in the settings (see backup above).</li>
+      <li><strong>Precise location</strong>: requested only on the “Zmanim in flight” screen, when you tap “Real position (GPS)”. A GPS reading adjusts the flight route on the device; it is kept with the flight details. The edition published on Google Play never sends it.</li>
+    </ul>
+
+    <h2>The morning gate (full edition)</h2>
+    <p>If you turn it on, the gate uses two special Android permissions, each explained before Android settings open:</p>
+    <ul>
+      <li><strong>Usage access</strong>: to know which app is shown in the foreground, during the time window you set and until the practice of the day is done. It also checks during any hitbodedut in progress, at any time of day. Only the last app opened is kept, in memory; no history is stored or sent.</li>
+      <li><strong>Display over other apps</strong>: to show the “I am with Hashem” screen in front of the apps you chose. It also appears in front of these apps during any hitbodedut in progress, at any time of day, until it ends.</li>
+    </ul>
+    <p>You can turn the gate off at any time: Settings → “I am with Hashem” switch. You can also remove these permissions in Android settings.</p>
+
+    <h2>Flights (full edition only)</h2>
+    <p>The light edition has no Internet access. The full edition connects only through the online services of the “Zmanim in flight” screen, behind a switch that is <strong>off by default</strong>: while it is off, nothing leaves the phone. Every connection uses HTTPS and happens at your request. <strong>The edition published on Google Play has a single online service, the route of a flight number</strong>: it has no live tracking and never queries OpenSky Network.</p>
+    <ul>
+      <li><strong>Route of a flight number, via adsbdb</strong> (api.adsbdb.com): when you tap the magnifier next to the flight number (or the Search key of the keyboard), or when you fill in the flight (“Fill in the flight”, an imported ticket) with a number but no route. If online services are off, the app first asks for your consent; accepting turns them on, and they stay on until you switch them off (under the flight results, “Refine the position”). The phone sends the flight number you entered (and, if needed, the airline code it contains), with the technical headers of any request, including the phone model and Android version.</li>
+      <li><strong>Live tracking, via OpenSky Network</strong> (opensky-network.org), <strong>only in the full edition distributed outside Google Play</strong>: started with a button, with online services on. The phone sends a box of coordinates about 10 degrees wide around the estimated position of the aircraft, each coordinate rounded to a tenth of a degree, with the same technical headers. The flight number is not sent: the aircraft is looked for in the answer, on the phone.</li>
+      <li><strong>Ticket</strong>: an imported ticket (PDF or photo) or pasted text is read on the phone, with no connection; only the flight number, airports, date and times are kept. The passenger’s name and the booking reference are not kept.</li>
+    </ul>
+    <p>As with any Internet connection, these services see the IP address of your connection. Their own privacy policies apply to what they receive. Links to websites (Sefaria, for example) open in your browser, only if you tap them.</p>
+
+    <h2>Web version</h2>
+    <p>Web version (iPhone and browser): the site, and this page with it, are hosted by Cloudflare (Cloudflare Pages), which sees the IP address of your connection like any host and keeps its own technical logs; the site contains no audience analytics and no tracker. What you enter stays in this browser, on this device, together with the tracks you add; the browser may erase it if the site is not added to the home screen: export regularly. “My location” uses the precise position given by the browser, for on-device calculation only. The only outside connection is api.adsbdb.com, for the route of a flight number, after your consent.</p>
+
+    <h2>Children</h2>
+    <p>The app is intended for adults and does not knowingly collect data from children.</p>
+
+    <h2>Who is responsible, and your rights</h2>
+    <p>This policy is published by MyHitbodedut Team, that is, the association HACHIVEINOU LÉTORATEKHA, controller of the data it receives. The app’s data is on your device: you view, export and erase it yourself in the settings. For e-mails you write to us, you can ask at any time for a copy or for deletion at the address below; in the European Union you may also contact your data protection authority (in France: the CNIL).</p>
+
+    <h2>Changes and contact</h2>
+    <p>Any change to this policy will be published on this page, with its date. For any question about this policy or your data, write to MyHitbodedut Team: <a href="mailto:myhitbodedut26@gmail.com">myhitbodedut26@gmail.com</a>.</p>
+    <p>Dedication: if you ask for a dedication, you yourself send an e-mail to MyHitbodedut Team from your own mail app. The team then receives your e-mail address, the name you enter, the intention you chose (healing, elevation of the soul, a match…) and your message. This data is used only to handle the request; it is kept as long as needed to handle it, then deleted, and you can ask for its deletion at any time at the same address. For a living person, only give their name with their consent. The app itself sends nothing and keeps nothing of the request.</p>
+  </section>
+
+  <!-- ===================================================================== -->
+  <section id="he" lang="he" dir="rtl">
+    <h1>MyHitbodedut — מדיניות פרטיות</h1>
+    <p class="date">עודכן: 16 בנובמבר 2026. חלה על אפליקציית Android ‏MyHitbodedut‏ (com.myhitbodedut; המהדורה הקלה: com.myhitbodedut.light), שמפרסמת העמותה ‏HACHIVEINOU LÉTORATEKHA‏ (עמותה צרפתית, צרפת) בשם ‏MyHitbodedut Team‏ (להלן „המפתח”). המהדורה שמתפרסמת ב־Google Play היא המהדורה המלאה. הסעיף „גרסת האתר” חל על האתר.</p>
+
+    <h2>בקצרה</h2>
+    <ul>
+      <li>אין חשבון, אין פרסומות, אין כלי ניתוח קהל. האפליקציה עצמה אינה שולחת דיווחי שגיאות; אם הסכמתם ב־Android לשתף נתוני אבחון, Google עשויה להעביר למפתח דוחות קריסה אנונימיים.</li>
+      <li>המפתח אינו מקבל שום נתון שלכם, מלבד הודעות הדואר שתבחרו לכתוב אליו (שאלה, הקדשה): אין לאפליקציה הזו שרת.</li>
+      <li>כל מה שתזינו נשאר בטלפון שלכם, מלבד מה שתבחרו בעצמכם לייצא או לשתף, עותק ההגדרות שיוצר הגיבוי של Android אם הפעלתם אותו, ומה ששירותי הטיסה המתוארים למטה שולחים כשתבקשו (במהדורה שמתפרסמת ב־Google Play: מספר הטיסה בלבד).</li>
+    </ul>
+
+    <h2>מה נשמר בטלפון</h2>
+    <p>האפליקציה שומרת את הנתונים שלה באזור הפרטי שלה במכשיר (ההעדפות הפרטיות של Android, ‏SharedPreferences), בשני קבצים:</p>
+    <ul>
+      <li><strong>ההגדרות</strong>: שעות, תזכורות, מראה, שפה, איך לפנות אליכם (צדיק או צדקת), המקום שנבחר לזמנים (עיר מהרשימה, או הקואורדינטות של „המיקום שלי”), פרטי טיסה שהזנתם וקריאת ה־GPS שלה, ימי ההפסקה, היעדים והגביעים שכבר הוצגו, הקריאה שלכם (מועדפים, טקסטים שמורים, סימניות, הטקסט האחרון שקראתם, הימים שבהם נאמר התיקון), השמות והמיקומים של הניגונים שהוספתם, ובמהדורה המלאה, רשימת האפליקציות שנבחרו למחסום הבוקר;</li>
+      <li><strong>היומן</strong>: ההתבודדויות שלכם (תאריך, משך, נושאים), ההערות שלכם, מצב הרוח לפני ואחרי, ההודיה, „לעבוד על”, והשם הפרטי שלכם.</li>
+    </ul>
+    <p>הם נמחקים מהטלפון כשמסירים את האפליקציה, או דרך הגדרות ← „איפוס האפליקציה”. הסרת האפליקציה אינה מוחקת את עותק ההגדרות שנשמר בגיבוי של Android בחשבון Google שלכם: הוא חוזר בהתקנה מחדש. כדי למחוק אותו, מחקו את הגיבוי של הטלפון הזה מחשבון Google שלכם (Google One או Google Drive, בקטע „גיבויים”).</p>
+
+    <h2>גיבוי והעברה למכשיר חדש</h2>
+    <ul>
+      <li><strong>גיבוי הענן של Android</strong> (אם הפעלתם אותו ב־Android, בחשבון Google שלכם): רק קובץ ההגדרות נכלל בו, עם כל מה שהרשימה למעלה מונה בו, ובכלל זה המקום שנבחר לזמנים והקריאה שלכם. <strong>היומן, ההערות והשם הפרטי אינם נכללים.</strong> את הגיבוי הזה עושה Android עבור החשבון שלכם; למפתח אין אליו גישה.</li>
+      <li><strong>העברה למכשיר חדש</strong> (Android 12 ומעלה; מהטלפון הישן לחדש, בכבל או ברשת המקומית): ההגדרות <strong>וגם</strong> היומן, כולל ההערות והשם הפרטי, כדי שלא תאבדו את ההיסטוריה שלכם כשתחליפו טלפון. ב־Android 8 עד 11 מועברות רק ההגדרות: ייצאו את היומן לפני החלפת הטלפון.</li>
+    </ul>
+
+    <h2>ייצוא, ייבוא ושיתוף</h2>
+    <p>רק אם תבקשו: הגדרות ← „ייצוא” כותב קובץ JSON במקום שתבחרו. הוא מכיל את היומן (עם מצבי הרוח, ההודיות והדברים לעבוד עליהם), ההערות, השם הפרטי, יומן התיקון, המועדפים, הטקסטים השמורים, הסימניות, ההגדרות, הימים הפטורים ורשימת האפליקציות של המחסום; הוא אינו מכיל את המיקום. אם תזינו סיסמה, הקובץ מוצפן במכשיר (AES-256-GCM) ואי אפשר לקרוא אותו בלעדיה; אחרת הוא נשאר גלוי. האפליקציה אינה שולחת אותו לשום מקום; מה שתעשו בו אחר כך נתון בידיכם. „ייבוא” קורא קובץ כזה בחזרה. כך גם שיתוף יום כתמונה עובר דרך תפריט השיתוף של Android, ביוזמתכם.</p>
+
+    <h2>מיקום</h2>
+    <ul>
+      <li><strong>מיקום משוער</strong>: ההרשאה מתבקשת רק אם תבחרו „המיקום שלי” במקום עיר. כל עוד „המיקום שלי” נבחר, האפליקציה קוראת שוב את המיקום כשפותחים את מסך הבית (לכל היותר פעם בשש שעות), את הזמנים או את המצפן, ואחרי שינוי אזור זמן, כדי שהזמנים יתאימו למקום שבו אתם נמצאים. אם הענקתם גם מיקום מדויק עבור ה־GPS בטיסה, ייתכן שהוא ישמש אז; בכל מקרה, המיקום שנשמר מעוגל למאית המעלה (פחות מקילומטר). הוא משמש, במכשיר, לחישוב הזמנים ולכיוון ירושלים. האפליקציה לעולם אינה שולחת אותו; הוא נשמר בהגדרות (ראו גיבוי למעלה).</li>
+      <li><strong>מיקום מדויק</strong>: מתבקש רק במסך „זמנים בטיסה”, כשתגעו ב„מיקום אמיתי (GPS)”. קריאת GPS מתקנת את מסלול הטיסה במכשיר; היא נשמרת עם פרטי הטיסה. המהדורה שמתפרסמת ב־Google Play אינה שולחת אותה לעולם.</li>
+    </ul>
+
+    <h2>מחסום הבוקר (מהדורה מלאה)</h2>
+    <p>אם תפעילו אותו, המחסום משתמש בשתי הרשאות מיוחדות של Android, וכל אחת מהן מוסברת לפני שנפתחות הגדרות Android:</p>
+    <ul>
+      <li><strong>גישה לנתוני שימוש</strong>: כדי לדעת איזו אפליקציה מוצגת בחזית, בשעות שקבעתם וכל עוד ההתבודדות של היום לא נעשתה. היא בודקת זאת גם במהלך כל התבודדות שהתחלתם, בכל שעה. רק האפליקציה האחרונה שנפתחה נשמרת, בזיכרון; שום היסטוריה לא נשמרת ולא נשלחת.</li>
+      <li><strong>הצגה מעל אפליקציות אחרות</strong>: כדי להציג את מסך „אני עם השם” לפני האפליקציות שבחרתם. הוא יופיע לפניהן גם במהלך כל התבודדות שהתחלתם, בכל שעה, עד שתסתיים.</li>
+    </ul>
+    <p>אפשר לכבות את המחסום בכל רגע: הגדרות ← המתג „אני עם השם”. אפשר גם לבטל את ההרשאות האלה בהגדרות של Android.</p>
+
+    <h2>טיסות (מהדורה מלאה בלבד)</h2>
+    <p>למהדורה הקלה אין גישה לאינטרנט. המהדורה המלאה מתחברת רק דרך השירותים המקוונים שבמסך „זמנים בטיסה”, מאחורי מתג שהוא <strong>כבוי כברירת מחדל</strong>: כל עוד הוא כבוי, שום דבר לא יוצא מהטלפון. כל חיבור נעשה ב־HTTPS, ולפי בקשתכם. <strong>במהדורה שמתפרסמת ב־Google Play יש שירות מקוון אחד בלבד, מסלול של מספר טיסה</strong>: אין בה מעקב בזמן אמת, והיא אינה פונה לעולם ל־OpenSky Network.</p>
+    <ul>
+      <li><strong>מסלול של מספר טיסה, דרך adsbdb</strong> (api.adsbdb.com): כשתגעו בזכוכית המגדלת ליד מספר הטיסה (או במקש החיפוש במקלדת), או כשתמלאו את הטיסה („מילוי הטיסה”, כרטיס מיובא) במספר בלי המסלול שלו. אם השירותים המקוונים כבויים, האפליקציה מבקשת קודם את הסכמתכם; ההסכמה מפעילה אותם, והם נשארים פעילים עד שתכבו את המתג (מתחת לתוצאות הטיסה, „דיוק המיקום”). הטלפון שולח את מספר הטיסה שהזנתם (ואם צריך, את קוד חברת התעופה שבתוכו), יחד עם הכותרות הטכניות של כל בקשה, ובהן דגם הטלפון וגרסת Android.</li>
+      <li><strong>מעקב בזמן אמת, דרך OpenSky Network</strong> (opensky-network.org), <strong>רק במהדורה המלאה שמופצת מחוץ ל־Google Play</strong>: מתחיל בלחיצה על כפתור, כשהשירותים המקוונים פעילים. הטלפון שולח ריבוע קואורדינטות ברוחב של כ־10 מעלות סביב המיקום המשוער של המטוס, וכל קואורדינטה מעוגלת לעשירית מעלה, עם אותן כותרות טכניות. מספר הטיסה אינו נשלח: המטוס מאותר בתשובה, בטלפון.</li>
+      <li><strong>כרטיס</strong>: כרטיס מיובא (PDF או תמונה) או טקסט מודבק נקראים בטלפון, בלי חיבור; נשמרים רק מספר הטיסה, שדות התעופה, התאריך והשעות. שם הנוסע ומספר ההזמנה אינם נשמרים.</li>
+    </ul>
+    <p>כמו בכל חיבור לאינטרנט, השירותים האלה רואים את כתובת ה־IP של החיבור שלכם. מדיניות הפרטיות שלהם חלה על מה שהם מקבלים. קישורים לאתרים (Sefaria, למשל) נפתחים בדפדפן שלכם, רק אם תגעו בהם.</p>
+
+    <h2>גרסת האתר</h2>
+    <p>גרסת האתר (iPhone ודפדפן): האתר, והדף הזה איתו, מתארחים אצל Cloudflare ‏(Cloudflare Pages), שרואה את כתובת ה־IP של החיבור שלכם כמו כל מארח ומנהלת יומנים טכניים משלה; באתר אין כלי ניתוח קהל ואין רכיבי מעקב. מה שתזינו נשאר בדפדפן הזה, במכשיר הזה, יחד עם הניגונים שתוסיפו; הדפדפן עלול למחוק אותו אם האתר לא נוסף למסך הבית: ייצאו באופן קבוע. „המיקום שלי” משתמש במיקום המדויק שהדפדפן נותן, לחישוב במכשיר בלבד. החיבור החיצוני היחיד: api.adsbdb.com, למסלול של מספר טיסה, אחרי הסכמתכם.</p>
+
+    <h2>ילדים</h2>
+    <p>האפליקציה מיועדת למבוגרים ואינה אוספת ביודעין נתונים של ילדים.</p>
+
+    <h2>מי אחראי, והזכויות שלכם</h2>
+    <p>המדיניות הזו מתפרסמת על ידי MyHitbodedut Team, כלומר העמותה ‏HACHIVEINOU LÉTORATEKHA‏, האחראית לנתונים שהיא מקבלת. נתוני האפליקציה נמצאים במכשיר שלכם: אתם צופים בהם, מייצאים אותם ומוחקים אותם בעצמכם בהגדרות. לגבי הודעות דואר שתכתבו לנו, אפשר לבקש בכל עת עותק או מחיקה בכתובת שלמטה; באיחוד האירופי אפשר גם לפנות לרשות להגנת המידע (בצרפת: CNIL).</p>
+
+    <h2>שינויים ויצירת קשר</h2>
+    <p>כל שינוי במדיניות הזו יפורסם בדף הזה, עם התאריך שלו. לכל שאלה על המדיניות הזו או על הנתונים שלכם, כתבו ל־‏MyHitbodedut Team‏: <span dir="ltr"><a href="mailto:myhitbodedut26@gmail.com">myhitbodedut26@gmail.com</a></span>.</p>
+    <p>הקדשה: אם תבקשו הקדשה, אתם עצמכם שולחים, בתוכנת הדואר שלכם, הודעה אל ‏MyHitbodedut Team‏. הצוות מקבל אז את כתובת הדואר שלכם, את השם שכתבתם, את הכוונה שבחרתם (רפואה, עילוי נשמה, זיווג…) ואת ההודעה שלכם. הנתונים האלה משמשים רק לטיפול בבקשה; הם נשמרים כל עוד הדבר נחוץ לטיפול בה ואחר כך נמחקים, ואפשר לבקש את מחיקתם בכל עת באותה כתובת. אם מדובר באדם חי, כתבו את שמו רק בהסכמתו. האפליקציה עצמה אינה שולחת דבר ואינה שומרת דבר מהבקשה.</p>
+  </section>
+</main>
+</body>
+</html>
